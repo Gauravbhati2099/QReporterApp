@@ -2,19 +2,72 @@ import * as XLSX from 'xlsx'
 
 export const CONFIGURATOR_ID = '12MM102101'
 
+
 export const EXCHANGE_RATES = Object.freeze({
+  // Base currency
   INR: 1,
-  AED: 23.5,
-  USD: 90,
-  EUR: 105,
-  GBP: 120,
+
+  // Major currencies
+  USD: 94.84,
+  EUR: 106.19,
+  GBP: 127.22,
+  AED: 25.82,
   RUB: 1.16,
-  CAD: 65,
-  AUD: 60,
-  JPY: 0.65,
-  CNY: 14,
-  SGD: 68,
-})
+
+  // North America
+  CAD: 67.91,
+  MXN: 5.08,
+
+  // Asia Pacific
+  AUD: 66.34,
+  NZD: 53.34,
+  JPY: 0.60,
+  CNY: 14.25,
+  SGD: 74.11,
+  HKD: 12.08,
+  KRW: 0.0704,
+  MYR: 23.25,
+  THB: 2.81,
+  IDR: 0.00522,
+  PHP: 1.49,
+  VND: 0.00369,
+  BDT: 0.76,
+  PKR: 0.34,
+  NPR: 0.63,
+  LKR: 0.29,
+
+  // Europe
+  CHF: 115.68,
+  SEK: 9.68,
+  NOK: 10.20,
+  DKK: 14.18,
+  PLN: 24.00,
+  CZK: 4.35,
+  HUF: 0.29,
+  TRY: 1.90,
+
+  // Middle East
+  SAR: 25.82,
+  QAR: 26.00,
+  KWD: 307.40,
+  BHD: 251.00,
+  OMR: 233.00,
+  JOD: 134.00,
+  ILS: 30.00,
+
+  // Africa
+  ZAR: 5.70,
+  EGP: 1.71,
+  KES: 0.73,
+  NGN: 0.066,
+
+  // South America
+  BRL: 17.22,
+  ARS: 5.95,
+  CLP: 0.092,
+  COP: 0.030
+});
+
 
 const REQUIRED_COLUMNS = {
   document: ['salesdocument', 'Sales document'],
@@ -127,6 +180,7 @@ function buildColumnPositions(headers) {
 
 function parseRows(matrix, headerIndex, positions, date1904) {
   const records = new Map()
+  const sourceRows = []
   let validSourceRows = 0
 
   for (let index = headerIndex + 1; index < matrix.length; index += 1) {
@@ -160,6 +214,7 @@ function parseRows(matrix, headerIndex, positions, date1904) {
       amount,
       inr: EXCHANGE_RATES[currency] == null ? null : amount * EXCHANGE_RATES[currency],
     }
+    sourceRows.push({ ...record, rowNumber })
     const previous = records.get(document)
 
     if (previous) {
@@ -184,6 +239,7 @@ function parseRows(matrix, headerIndex, positions, date1904) {
     rows: [...records.values()],
     validSourceRows,
     repeatedItemRows: validSourceRows - records.size,
+    sourceRows,
   }
 }
 
