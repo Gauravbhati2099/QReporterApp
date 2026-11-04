@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   formatCount,
   formatDateLabel,
   formatMoney,
   getDateBounds,
+  getModifiedZScoreOutlierRows,
+  getOutlierRows,
+  getPercentileBounds,
   getSummary,
 } from './lib/reportData'
 import { readWorkbookInWorker } from './lib/workbookClient'
@@ -36,6 +39,7 @@ function Icon({ name, size = 18 }) {
     search: <><circle cx="10.8" cy="10.8" r="6.8" /><path d="m16 16 4 4" /></>,
     download: <><path d="M12 3v12m0 0 5-5m-5 5-5-5" /><path d="M5 20h14" /></>,
     sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2m0 16v2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42M2 12h2m16 0h2M4.93 19.07l1.42-1.42m11.3-11.3 1.42-1.42" /></>,
+    moon: <><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" /></>,
     present: <><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3" /><path d="M8 12h8m-4-4v8" /></>,
     check: <><path d="m5 12 4 4L19 6" /></>,
     close: <><path d="m18 6-12 12M6 6l12 12" /></>,
@@ -338,6 +342,9 @@ function makeCsv(rows) {
 
 function App() {
   const inputRef = useRef(null)
+  const themeMenuRef = useRef(null)
+  const themeButtonRef = useRef(null)
+  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
   const isRestoring = useAppStore((state) => state.isRestoring)
   const rows = useAppStore((state) => state.rows)
   const selections = useAppStore((state) => state.selections)
@@ -346,6 +353,8 @@ function App() {
   const groupBy = useAppStore((state) => state.groupBy)
   const query = useAppStore((state) => state.query)
   const tableFilters = useAppStore((state) => state.tableFilters)
+  const outlierFilter = useAppStore((state) => state.outlierFilter)
+  const percentileTail = useAppStore((state) => state.percentileTail)
   const theme = useAppStore((state) => state.theme)
   const fileInfo = useAppStore((state) => state.fileInfo)
   const status = useAppStore((state) => state.status)
@@ -361,6 +370,8 @@ function App() {
   const setGroupBy = useAppStore((state) => state.setGroupBy)
   const setQuery = useAppStore((state) => state.setQuery)
   const setTableFilters = useAppStore((state) => state.setTableFilters)
+  const setOutlierFilter = useAppStore((state) => state.setOutlierFilter)
+  const setPercentileTail = useAppStore((state) => state.setPercentileTail)
   const setTheme = useAppStore((state) => state.setTheme)
   const setFileInfo = useAppStore((state) => state.setFileInfo)
   const setStatus = useAppStore((state) => state.setStatus)
@@ -368,6 +379,28 @@ function App() {
   const setIsReading = useAppStore((state) => state.setIsReading)
   const setDragging = useAppStore((state) => state.setDragging)
   const setIsPresenting = useAppStore((state) => state.setIsPresenting)
+
+  useEffect(() => {
+    if (!isThemeMenuOpen) return undefined
+
+    function handlePointerDown(event) {
+      if (!themeMenuRef.current?.contains(event.target)) setIsThemeMenuOpen(false)
+    }
+
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') {
+        setIsThemeMenuOpen(false)
+        themeButtonRef.current?.focus()
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isThemeMenuOpen])
 
   useEffect(() => {
     let active = true
@@ -442,6 +475,15 @@ function App() {
   }, [setIsPresenting])
 
   const bounds = useMemo(() => getDateBounds(rows), [rows])
+  const outlierRows = useMemo(() => getOutlierRows(rows), [rows])
+  const modifiedZScoreOutlierRows = useMemo(
+    () => getModifiedZScoreOutlierRows(rows),
+    [rows],
+  )
+  const percentileBounds = useMemo(
+    () => getPercentileBounds(rows, percentileTail),
+    [percentileTail, rows],
+  )
   const options = useMemo(
     () => ({
       organizations: [...new Set(rows.map((row) => row.salesOrganization))].sort(
@@ -467,7 +509,7 @@ function App() {
     return ''
   }, [bounds.max, bounds.min, dateFrom, dateTo, rows.length])
 
-  const filteredRows = useMemo(() => {
+  const selectedRows = useMemo(() => {
     if (dateError) return []
     const effectiveTo = dateTo || dateFrom
     return rows.filter(
@@ -479,6 +521,45 @@ function App() {
         (!effectiveTo || row.date <= effectiveTo),
     )
   }, [dateError, dateFrom, dateTo, rows, selections])
+
+  const filteredRows = useMemo(() => {
+    if (outlierFilter === 'zero') return selectedRows.filter((row) => row.amount !== 0)
+    if (outlierFilter === 'iqr') return selectedRows.filter((row) => !outlierRows.has(row))
+    if (outlierFilter === 'mad') {
+      return selectedRows.filter((row) => !modifiedZScoreOutlierRows.has(row))
+    }
+    if (outlierFilter === 'percentile') {
+      return selectedRows.filter((row) => {
+        const range = percentileBounds.get(row.currency)
+        return !range || (row.amount >= range.lower && row.amount <= range.upper)
+      })
+    }
+    return selectedRows
+  }, [modifiedZScoreOutlierRows, outlierFilter, outlierRows, percentileBounds, selectedRows])
+
+  const percentileRangeSummary = useMemo(() => {
+    if (outlierFilter !== 'percentile') return ''
+    const retainedRanges = new Map()
+    for (const row of filteredRows) {
+      const current = retainedRanges.get(row.currency) ?? { lower: row.amount, upper: row.amount }
+      current.lower = Math.min(current.lower, row.amount)
+      current.upper = Math.max(current.upper, row.amount)
+      retainedRanges.set(row.currency, current)
+    }
+
+    return [...new Set(selectedRows.map((row) => row.currency))]
+      .sort()
+      .map((currency) => {
+        const range = percentileBounds.get(currency)
+        if (!range) return ''
+        const keptRange = retainedRanges.has(currency)
+          ? `${formatMoney(retainedRanges.get(currency).lower, currency)}–${formatMoney(retainedRanges.get(currency).upper, currency)}`
+          : 'no quotations retained'
+        return `${currency} kept ${keptRange} (limits ${formatMoney(range.lower, currency)}–${formatMoney(range.upper, currency)})`
+      })
+      .filter(Boolean)
+      .join(' · ')
+  }, [filteredRows, outlierFilter, percentileBounds, selectedRows])
 
   const summary = useMemo(() => getSummary(filteredRows), [filteredRows])
   const tableRows = useMemo(() => {
@@ -568,6 +649,7 @@ function App() {
         sheet: imported.sheetName,
       })
       setTableFilters({})
+      setOutlierFilter('all')
       setQuery('')
       setStatus(
         `${formatCount(imported.rows.length)} quotation(s) loaded and saved in this browser${
@@ -594,6 +676,7 @@ function App() {
     setDateTo(bounds.max === bounds.min ? '' : bounds.max)
     setQuery('')
     setTableFilters({})
+    setOutlierFilter('all')
   }
 
   function downloadCsv() {
@@ -662,14 +745,40 @@ function App() {
               <span>Replace workbook</span>
             </button>
           )}
-          <button
-            aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}
-            className="theme-toggle"
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            type="button"
-          >
-            <Icon name="sun" size={17} />
-          </button>
+          <div className="theme-menu" ref={themeMenuRef}>
+            <button
+              aria-controls="theme-options"
+              aria-expanded={isThemeMenuOpen}
+              aria-haspopup="menu"
+              aria-label={`Color theme: ${theme}`}
+              className="theme-toggle"
+              onClick={() => setIsThemeMenuOpen((isOpen) => !isOpen)}
+              ref={themeButtonRef}
+              type="button"
+            >
+              <Icon name={theme === 'dark' ? 'moon' : 'sun'} size={17} />
+            </button>
+            {isThemeMenuOpen && (
+              <div className="theme-popover" id="theme-options" role="menu" aria-label="Color theme">
+                {['light', 'dark'].map((option) => (
+                  <button
+                    aria-checked={theme === option}
+                    className={`theme-option${theme === option ? ' is-selected' : ''}`}
+                    key={option}
+                    onClick={() => {
+                      setTheme(option)
+                      setIsThemeMenuOpen(false)
+                    }}
+                    role="menuitemradio"
+                    type="button"
+                  >
+                    <Icon name={option === 'dark' ? 'moon' : 'sun'} size={16} />
+                    <span>{option === 'dark' ? 'Dark mode' : 'Light mode'}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="local-badge"><span /> Saved locally</div>
         </div>
       </header>
@@ -828,6 +937,39 @@ function App() {
                     selected={selections[filter.key]}
                   />
                 ))}
+                <label className="outlier-filter">
+                  <span>Outlier filter</span>
+                  <select
+                    aria-label="Outlier filter"
+                    onChange={(event) => setOutlierFilter(event.target.value)}
+                    value={outlierFilter}
+                  >
+                    <option value="all">With outlier (include all)</option>
+                    <option value="zero">Without 0 value quotations</option>
+                    <option value="iqr">Without 1.5 IQR outliers</option>
+                    <option value="mad">Without Modified Z-Score (MAD) outliers</option>
+                    <option value="percentile">Percentile range</option>
+                  </select>
+                  {outlierFilter === 'percentile' && (
+                    <span className="percentile-control">
+                      <input
+                        aria-label="Percent excluded from each percentile tail"
+                        max="49"
+                        min="0"
+                        onChange={(event) => {
+                          const value = Number(event.target.value)
+                          if (event.target.value !== '' && Number.isFinite(value) && value >= 0 && value <= 49) {
+                            setPercentileTail(value)
+                          }
+                        }}
+                        step="0.5"
+                        type="number"
+                        value={percentileTail}
+                      />
+                      <span>%</span>
+                    </span>
+                  )}
+                </label>
                 <button className="reset-button" onClick={resetFilters} type="button">
                   <Icon name="close" size={14} /> Reset
                 </button>
@@ -837,6 +979,22 @@ function App() {
                   <span className="error-inline">{dateError}</span>
                 ) : (
                   <span>{formatCount(filteredRows.length)} quotations in view</span>
+                )}
+                {outlierFilter !== 'all' && !dateError && (
+                  <span>
+                    {formatCount(selectedRows.length - filteredRows.length)} quotation(s) excluded
+                    {outlierFilter === 'iqr'
+                      ? ' · 1.5×IQR per currency'
+                      : outlierFilter === 'mad'
+                        ? ' · Modified Z-Score, 3.5 cutoff per currency'
+                        : ' · zero value'}
+                  </span>
+                )}
+                {outlierFilter === 'percentile' && !dateError && (
+                  <span className="percentile-range">
+                    Excluded below {percentileTail}th / above {100 - percentileTail}th percentile
+                    {percentileRangeSummary ? ` · value range: ${percentileRangeSummary}` : ''}
+                  </span>
                 )}
                 {!dateError && !dateTo && dateFrom && <span className="single-day-hint">Blank To date shows one day</span>}
               </div>

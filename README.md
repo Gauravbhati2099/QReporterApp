@@ -13,6 +13,14 @@ npm run dev
 
 Create a production build with `npm run build`.
 
+## Offline use
+
+Production builds cache the app shell and generated assets in a service worker after
+the first successful online visit. Open the deployed site once while online, then it
+can be reopened without a network connection in the same browser. Service workers
+require HTTPS, except on localhost; the Vite development server does not enable
+offline caching.
+
 ## Upload a workbook
 
 Select or drop an XLSX-format workbook. The file name and extension are not used to

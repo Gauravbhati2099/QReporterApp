@@ -6,6 +6,15 @@ const initialSelections = () => ({
   currencies: [],
 })
 
+const getInitialTheme = () => {
+  try {
+    return window.localStorage.getItem('qreport-theme') === 'dark' ? 'dark' : 'light'
+  } catch (error) {
+    console.error('Unable to read the saved theme preference.', error)
+    return 'light'
+  }
+}
+
 const createFieldSetter = (set, field) => (value) =>
   set((state) => ({
     [field]: typeof value === 'function' ? value(state[field]) : value,
@@ -20,7 +29,9 @@ export const useAppStore = create((set) => ({
   groupBy: 'salesOrganization',
   query: '',
   tableFilters: {},
-  theme: 'light',
+  outlierFilter: 'all',
+  percentileTail: 5,
+  theme: getInitialTheme(),
   fileInfo: null,
   status: '',
   error: '',
@@ -35,7 +46,16 @@ export const useAppStore = create((set) => ({
   setGroupBy: createFieldSetter(set, 'groupBy'),
   setQuery: createFieldSetter(set, 'query'),
   setTableFilters: createFieldSetter(set, 'tableFilters'),
-  setTheme: createFieldSetter(set, 'theme'),
+  setOutlierFilter: createFieldSetter(set, 'outlierFilter'),
+  setPercentileTail: createFieldSetter(set, 'percentileTail'),
+  setTheme: (theme) => {
+    set({ theme })
+    try {
+      window.localStorage.setItem('qreport-theme', theme)
+    } catch (error) {
+      console.error('Unable to save the theme preference.', error)
+    }
+  },
   setFileInfo: createFieldSetter(set, 'fileInfo'),
   setStatus: createFieldSetter(set, 'status'),
   setError: createFieldSetter(set, 'error'),
