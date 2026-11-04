@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  BrowserRouter,
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom'
+import {
   formatCount,
   formatDateLabel,
   formatMoney,
@@ -11,6 +20,7 @@ import {
 } from './lib/reportData'
 import { readWorkbookInWorker } from './lib/workbookClient'
 import {
+  clearWorkbookData,
   createWorkbookFile,
   loadWorkbook,
   saveWorkbook,
@@ -22,6 +32,39 @@ const FILTERS = [
   { key: 'organizations', label: 'Sales Organization', rowKey: 'salesOrganization' },
   { key: 'usages', label: 'Usage group', rowKey: 'usage' },
   { key: 'currencies', label: 'Currency', rowKey: 'currency' },
+]
+
+const PREPROCESSING_STEPS = [
+  {
+    id: 'header-validation',
+    label: 'Validate column mapping',
+    description: 'Confirm the workbook contains the required SAP columns before analysis.',
+  },
+  {
+    id: 'data-normalization',
+    label: 'Normalize values',
+    description: 'Clean date strings, currency text, and amount values into report-friendly formats.',
+  },
+  {
+    id: 'duplicate-check',
+    label: 'Remove duplicate or conflicting rows',
+    description: 'Deduplicate repeated sales documents and block conflicting record values.',
+  },
+  {
+    id: 'currency-conversion',
+    label: 'Convert to INR',
+    description: 'Apply the configured INR conversion rates for value comparisons and KPI totals.',
+  },
+  {
+    id: 'outlier-filter',
+    label: 'Detect outliers',
+    description: 'Flag values outside IQR, MAD, or percentile ranges for review.',
+  },
+  {
+    id: 'report-aggregation',
+    label: 'Build summary tables',
+    description: 'Group sales data by organization, usage, and currency for the final report.',
+  },
 ]
 
 const CHART_GROUPS = [
@@ -65,6 +108,7 @@ function Icon({ name, size = 18 }) {
 }
 
 function MultiSelect({ label, options, selected, onChange }) {
+  const menuRef = useRef(null)
   const selectedCount = selected.length
   const summary =
     selectedCount === options.length
@@ -72,6 +116,17 @@ function MultiSelect({ label, options, selected, onChange }) {
       : selectedCount === 0
         ? 'None'
         : `${selectedCount} selected`
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event) {
+      if (!menuRef.current?.contains(event.target)) {
+        menuRef.current.open = false
+      }
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [])
 
   function toggle(value) {
     onChange(
@@ -82,7 +137,7 @@ function MultiSelect({ label, options, selected, onChange }) {
   }
 
   return (
-    <details className="filter-menu">
+    <details className="filter-menu" ref={menuRef}>
       <summary>
         <span>{label}</span>
         <span className="filter-summary">{summary}</span>
@@ -340,11 +395,77 @@ function makeCsv(rows) {
   ].join('\r\n')
 }
 
+function compareRawDataValues(left, right, key) {
+  const numericKeys = new Set(['amount', 'inr'])
+
+  if (numericKeys.has(key)) {
+    const parseNumericCell = (value) => {
+      if (typeof value === 'number') return value
+      const text = String(value ?? '').replace(/[,\s₹$€£]/g, '')
+      return Number(text)
+    }
+    const leftNumber = parseNumericCell(left)
+    const rightNumber = parseNumericCell(right)
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+      return leftNumber - rightNumber
+    }
+  }
+
+  const leftText = String(left ?? '')
+  const rightText = String(right ?? '')
+  return leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+const PROCESSED_DATA_COLUMNS = [
+  { key: 'document', label: 'Sales document' },
+  { key: 'createdBy', label: 'Created By' },
+  { key: 'salesOrganization', label: 'Sales Organization' },
+  { key: 'usage', label: 'Usage group' },
+  { key: 'currency', label: 'Currency' },
+  { key: 'date', label: 'Date' },
+  { key: 'amount', label: 'Amount' },
+  { key: 'inr', label: 'INR' },
+]
+
+function getDataCellValue(row, column, view) {
+  if (view === 'raw') {
+    return row.sourceValues?.[column.sourceIndex] || '—'
+  }
+  if (column.key === 'amount') {
+    return Number.isFinite(row.amount) ? formatMoney(row.amount, row.currency) : '—'
+  }
+  if (column.key === 'inr') {
+    return row.inr != null ? formatMoney(row.inr, 'INR') : '—'
+  }
+  return row[column.key] || '—'
+}
+
 function App() {
+  return (
+    <BrowserRouter>
+      <AppShell />
+    </BrowserRouter>
+  )
+}
+
+function AppShell() {
   const inputRef = useRef(null)
   const themeMenuRef = useRef(null)
   const themeButtonRef = useRef(null)
+  const navigate = useNavigate()
+  const location = useLocation()
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
+  const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
+  const [rawDataRows, setRawDataRows] = useState([])
+  const [rawDataColumns, setRawDataColumns] = useState([])
+  const [rawDataSearch, setRawDataSearch] = useState('')
+  const [rawDataSort, setRawDataSort] = useState({ key: 'date', direction: 'desc' })
+  const [rawDataSlicers, setRawDataSlicers] = useState({
+    salesOrganization: '',
+    usage: '',
+    currency: '',
+  })
+  const [rawDataView, setRawDataView] = useState('raw')
   const isRestoring = useAppStore((state) => state.isRestoring)
   const rows = useAppStore((state) => state.rows)
   const selections = useAppStore((state) => state.selections)
@@ -402,6 +523,14 @@ function App() {
     }
   }, [isThemeMenuOpen])
 
+  function togglePreprocessingStep(stepId) {
+    setSelectedSteps((current) =>
+      current.includes(stepId)
+        ? current.filter((id) => id !== stepId)
+        : [...current, stepId],
+    )
+  }
+
   useEffect(() => {
     let active = true
 
@@ -416,6 +545,8 @@ function App() {
 
         const importedBounds = getDateBounds(imported.rows)
         setRows(imported.rows)
+        setRawDataRows(imported.sourceRows ?? imported.rows)
+        setRawDataColumns(imported.sourceColumns ?? [])
         setSelections({
           organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
           usages: [...new Set(imported.rows.map((row) => row.usage))],
@@ -429,6 +560,7 @@ function App() {
           sheet: savedWorkbook.sheetName,
         })
         setStatus('Saved workbook restored from this browser.')
+        navigate('/dashboard', { replace: true })
       } catch (caught) {
         if (active) {
           setError(
@@ -474,6 +606,12 @@ function App() {
     }
   }, [setIsPresenting])
 
+  useEffect(() => {
+    if (rows.length > 0 && location.pathname === '/') {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [location.pathname, navigate, rows.length])
+
   const bounds = useMemo(() => getDateBounds(rows), [rows])
   const outlierRows = useMemo(() => getOutlierRows(rows), [rows])
   const modifiedZScoreOutlierRows = useMemo(
@@ -508,6 +646,44 @@ function App() {
     }
     return ''
   }, [bounds.max, bounds.min, dateFrom, dateTo, rows.length])
+
+  const rawDataOptions = useMemo(() => ({
+    salesOrganization: [...new Set(rawDataRows.map((row) => row.salesOrganization).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    usage: [...new Set(rawDataRows.map((row) => row.usage).filter(Boolean))].sort(),
+    currency: [...new Set(rawDataRows.map((row) => row.currency).filter(Boolean))].sort(),
+  }), [rawDataRows])
+  const displayedDataColumns = rawDataView === 'raw' ? rawDataColumns : PROCESSED_DATA_COLUMNS
+
+  const visibleRawRows = useMemo(() => {
+    const query = rawDataSearch.trim().toLowerCase()
+    return [...rawDataRows]
+      .filter((row) => {
+        const matchesQuery = !query || Object.values({
+          document: row.document,
+          createdBy: row.createdBy,
+          salesOrganization: row.salesOrganization,
+          usage: row.usage,
+          currency: row.currency,
+          date: row.date,
+          amount: String(row.amount),
+          inr: row.inr != null ? String(row.inr) : '',
+          sourceValues: row.sourceValues?.join(' '),
+        }).some((value) => String(value).toLowerCase().includes(query))
+
+        const matchesSalesOrganization = !rawDataSlicers.salesOrganization || row.salesOrganization === rawDataSlicers.salesOrganization
+        const matchesUsage = !rawDataSlicers.usage || row.usage === rawDataSlicers.usage
+        const matchesCurrency = !rawDataSlicers.currency || row.currency === rawDataSlicers.currency
+
+        return matchesQuery && matchesSalesOrganization && matchesUsage && matchesCurrency
+      })
+      .sort((a, b) => {
+        const direction = rawDataSort.direction === 'asc' ? 1 : -1
+        const sourceColumn = rawDataColumns.find((column) => column.key === rawDataSort.key)
+        const left = sourceColumn ? a.sourceValues?.[sourceColumn.sourceIndex] : a[rawDataSort.key]
+        const right = sourceColumn ? b.sourceValues?.[sourceColumn.sourceIndex] : b[rawDataSort.key]
+        return compareRawDataValues(left, right, rawDataSort.key) * direction
+      })
+  }, [rawDataColumns, rawDataRows, rawDataSearch, rawDataSlicers, rawDataSort])
 
   const selectedRows = useMemo(() => {
     if (dateError) return []
@@ -636,6 +812,16 @@ function App() {
 
       const importedBounds = getDateBounds(imported.rows)
       setRows(imported.rows)
+      setRawDataRows(imported.sourceRows ?? imported.rows)
+      setRawDataColumns(imported.sourceColumns ?? [])
+      setRawDataSearch('')
+      setRawDataSort({ key: 'date', direction: 'desc' })
+      setRawDataSlicers({
+        salesOrganization: '',
+        usage: '',
+        currency: '',
+      })
+      setRawDataView('raw')
       setSelections({
         organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
         usages: [...new Set(imported.rows.map((row) => row.usage))],
@@ -658,6 +844,7 @@ function App() {
             : ''
         }. Previous workbook replaced.`,
       )
+      navigate('/dashboard')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The workbook could not be loaded.')
     } finally {
@@ -689,6 +876,41 @@ function App() {
     anchor.download = 'quotation-summary.csv'
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  async function clearLocalData() {
+    const confirmed = window.confirm(
+      'Clear the saved workbook and all local report data from this browser? This cannot be undone.',
+    )
+    if (!confirmed) return
+
+    try {
+      await clearWorkbookData()
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'The local data could not be cleared.')
+      return
+    }
+
+    setRows([])
+    setRawDataRows([])
+    setRawDataColumns([])
+    setRawDataSearch('')
+    setRawDataSort({ key: 'date', direction: 'desc' })
+    setRawDataSlicers({ salesOrganization: '', usage: '', currency: '' })
+    setRawDataView('raw')
+    setSelections({ organizations: [], usages: [], currencies: [] })
+    setDateFrom('')
+    setDateTo('')
+    setGroupBy('salesOrganization')
+    setQuery('')
+    setTableFilters({})
+    setOutlierFilter('all')
+    setPercentileTail(5)
+    setFileInfo(null)
+    setStatus('Local workbook data cleared from this browser.')
+    setError('')
+    setIsReading(false)
+    navigate('/')
   }
 
   function handleDrop(event) {
@@ -729,21 +951,40 @@ function App() {
   return (
     <div className={`app-shell theme-${theme}${isPresenting ? ' is-presenting' : ''}`}>
       <header className="topbar">
-        <a className="brand" href="#" aria-label="QReport home">
-          <span className="brand-mark"><Icon name="chart" size={20} /></span>
-          <span className="brand-name">qreport<span>er</span></span>
-        </a>
+        <div className="topbar-left">
+          <a className="brand" href="#" aria-label="QReport home">
+            <span className="brand-mark"><Icon name="chart" size={20} /></span>
+            <span className="brand-name">qreport<span>er</span></span>
+          </a>
+          {rows.length > 0 && (
+            <nav aria-label="Main pages" className="topbar-nav">
+              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/dashboard">Dashboard</NavLink>
+              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
+              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
+            </nav>
+          )}
+        </div>
         <div className="topbar-actions">
           {rows.length > 0 && (
-            <button
-              className="button button-outline"
-              disabled={isReading || isRestoring}
-              onClick={() => inputRef.current?.click()}
-              type="button"
-            >
-              <Icon name="upload" size={16} />
-              <span>Replace workbook</span>
-            </button>
+            <>
+              <button
+                className="button button-outline"
+                disabled={isReading || isRestoring}
+                onClick={() => inputRef.current?.click()}
+                type="button"
+              >
+                <Icon name="upload" size={16} />
+                <span>Replace workbook</span>
+              </button>
+              <button
+                className="button button-danger button-outline"
+                disabled={isReading || isRestoring}
+                onClick={clearLocalData}
+                type="button"
+              >
+                Clear saved data
+              </button>
+            </>
           )}
           <div className="theme-menu" ref={themeMenuRef}>
             <button
@@ -788,74 +1029,83 @@ function App() {
           <section aria-live="polite" className="panel restore-card">
             Restoring the saved workbook from this browser…
           </section>
-        ) : !rows.length ? (
-          <section
-            className={`welcome-screen ${dragging ? 'is-dragging' : ''}`}
-            onDragEnter={(event) => {
-              event.preventDefault()
-              setDragging(true)
-            }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false)
-            }}
-            onDrop={handleDrop}
-          >
-            <div className="welcome-copy">
-              <div className="eyebrow"><span className="eyebrow-line" /> QUOTATION INTELLIGENCE</div>
-              <h1>Your sales data,<br /><span>finally in focus.</span></h1>
-              <p>
-                Turn an SAP quotation workbook into an interactive report.
-                Your workbook stays in this browser — nothing is sent to a server.
-              </p>
-              <div className="welcome-actions">
-                <button
-                  className="button button-primary button-large"
-                  disabled={isReading || isRestoring}
-                  onClick={() => inputRef.current?.click()}
-                  type="button"
-                >
-                  <Icon name="upload" size={18} />
-                  {isReading ? 'Reading workbook…' : 'Upload workbook'}
-                  {!isReading && <Icon name="arrow" size={16} />}
-                </button>
-                <span className="file-note">XLSX format · saved on this device</span>
-              </div>
-            </div>
-            <div className="upload-card">
-              <div className="upload-illustration">
-                <div className="illustration-sheet">
-                  <span className="sheet-fold" />
-                  <div className="sheet-grid">
-                    <i /><i /><i /><i /><i /><i /><i /><i /><i />
-                  </div>
-                </div>
-                <div className="floating-stat stat-one"><span className="stat-dot blue" /> Sales Org <strong>2070</strong></div>
-                <div className="floating-stat stat-two"><span className="stat-dot green" /> Quotations <strong>3,265</strong></div>
-              </div>
-              <button
-                className="drop-target"
-                disabled={isReading}
-                onClick={() => inputRef.current?.click()}
-                type="button"
-              >
-                <span className="drop-icon"><Icon name="file" size={20} /></span>
-                <span><strong>Drop your workbook here</strong><small>or browse files on your device</small></span>
-                <Icon name="arrow" size={16} />
-              </button>
-              <div className="requirements">
-                <span>Required columns</span>
-                <div className="required-chips">
-                  {['Sales document', 'Sales Organization', 'Document Date', 'Document Currency', 'Net Value (Header)', 'Created By'].map((column) => (
-                    <span key={column}><Icon name="check" size={12} />{column}</span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
         ) : (
-          <>
-            <section className="page-heading">
+          <Routes>
+            <Route
+              path="/"
+              element={
+                <section
+                  className={`welcome-screen ${dragging ? 'is-dragging' : ''}`}
+                  onDragEnter={(event) => {
+                    event.preventDefault()
+                    setDragging(true)
+                  }}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) setDragging(false)
+                  }}
+                  onDrop={handleDrop}
+                >
+                  <div className="welcome-copy">
+                    <div className="eyebrow"><span className="eyebrow-line" /> QUOTATION INTELLIGENCE</div>
+                    <h1>Your sales data,<br /><span>finally in focus.</span></h1>
+                    <p>
+                      Turn an SAP quotation workbook into an interactive report.
+                      Your workbook stays in this browser — nothing is sent to a server.
+                    </p>
+                    <div className="welcome-actions">
+                      <button
+                        className="button button-primary button-large"
+                        disabled={isReading || isRestoring}
+                        onClick={() => inputRef.current?.click()}
+                        type="button"
+                      >
+                        <Icon name="upload" size={18} />
+                        {isReading ? 'Reading workbook…' : 'Upload workbook'}
+                        {!isReading && <Icon name="arrow" size={16} />}
+                      </button>
+                      <span className="file-note">XLSX format · saved on this device</span>
+                    </div>
+                  </div>
+                  <div className="upload-card">
+                    <div className="upload-illustration">
+                      <div className="illustration-sheet">
+                        <span className="sheet-fold" />
+                        <div className="sheet-grid">
+                          <i /><i /><i /><i /><i /><i /><i /><i /><i />
+                        </div>
+                      </div>
+                      <div className="floating-stat stat-one"><span className="stat-dot blue" /> Sales Org <strong>2070</strong></div>
+                      <div className="floating-stat stat-two"><span className="stat-dot green" /> Quotations <strong>3,265</strong></div>
+                    </div>
+                    <button
+                      className="drop-target"
+                      disabled={isReading}
+                      onClick={() => inputRef.current?.click()}
+                      type="button"
+                    >
+                      <span className="drop-icon"><Icon name="file" size={20} /></span>
+                      <span><strong>Drop your workbook here</strong><small>or browse files on your device</small></span>
+                      <Icon name="arrow" size={16} />
+                    </button>
+                    <div className="requirements">
+                      <span>Required columns</span>
+                      <div className="required-chips">
+                        {['Sales document', 'Sales Organization', 'Document Date', 'Document Currency', 'Net Value (Header)', 'Created By'].map((column) => (
+                          <span key={column}><Icon name="check" size={12} />{column}</span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              }
+            />
+            <Route
+              path="/dashboard"
+              element={
+                rows.length ? (
+                  <>
+                    <section className="page-heading">
               <div>
                 <div className="eyebrow"><span className="eyebrow-line" /> SALES OVERVIEW</div>
                 <h1>Quotation dashboard</h1>
@@ -890,6 +1140,50 @@ function App() {
                   <Icon name="upload" size={16} /> Replace workbook
                 </button>
               </div>
+            </section>
+
+            <section aria-label="Presentation filters" className="presentation-filters">
+              <MultiSelect
+                label="Sales Organization"
+                onChange={(values) =>
+                  setSelections((current) => ({ ...current, organizations: values }))
+                }
+                options={options.organizations}
+                selected={selections.organizations}
+              />
+              <label className="outlier-filter">
+                <span>Outlier filter</span>
+                <select
+                  aria-label="Presentation outlier filter"
+                  onChange={(event) => setOutlierFilter(event.target.value)}
+                  value={outlierFilter}
+                >
+                  <option value="all">With outlier (include all)</option>
+                  <option value="zero">Without 0 value quotations</option>
+                  <option value="iqr">Without 1.5 IQR outliers</option>
+                  <option value="mad">Without Modified Z-Score (MAD) outliers</option>
+                  <option value="percentile">Percentile range</option>
+                </select>
+                {outlierFilter === 'percentile' && (
+                  <span className="percentile-control">
+                    <input
+                      aria-label="Percent excluded from each percentile tail"
+                      max="49"
+                      min="0"
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        if (event.target.value !== '' && Number.isFinite(value) && value >= 0 && value <= 49) {
+                          setPercentileTail(value)
+                        }
+                      }}
+                      step="0.5"
+                      type="number"
+                      value={percentileTail}
+                    />
+                    <span>%</span>
+                  </span>
+                )}
+              </label>
             </section>
 
             <section aria-label="Dashboard filters" className="panel filter-panel">
@@ -1147,7 +1441,196 @@ function App() {
                 <span>INR amounts shown in Lacs / Cr <b>ⓘ</b></span>
               </div>
             </section>
-          </>
+                  </>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
+            <Route
+              path="/steps"
+              element={
+                rows.length ? (
+                  <section className="panel pipeline-panel page-section">
+                    <div className="section-heading">
+                      <div>
+                        <h2>Processing pipeline</h2>
+                        <p>Select the preprocessing steps you want to review before the report is generated.</p>
+                      </div>
+                      <span className="result-pill">{selectedSteps.length} selected</span>
+                    </div>
+                    <div className="pipeline-content">
+                      <div className="precheck-list">
+                        {PREPROCESSING_STEPS.map((step) => (
+                          <label className="precheck-item" key={step.id}>
+                            <input
+                              checked={selectedSteps.includes(step.id)}
+                              onChange={() => togglePreprocessingStep(step.id)}
+                              type="checkbox"
+                            />
+                            <span className="precheck-copy">
+                              <strong>{step.label}</strong>
+                              <small>{step.description}</small>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="pipeline-summary">
+                        <h3>Active steps</h3>
+                        {selectedSteps.length > 0 ? (
+                          <ul>
+                            {selectedSteps.map((stepId) => (
+                              <li key={stepId}>{PREPROCESSING_STEPS.find((step) => step.id === stepId)?.label}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p>No preprocessing steps selected.</p>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
+            <Route
+              path="/raw-data"
+              element={
+                rows.length ? (
+                  <section className="panel preview-panel page-section">
+                    <div className="table-heading">
+                      <div>
+                        <h2>Workbook data</h2>
+                        <p>Compare the original workbook with the processed quotation dataset.</p>
+                      </div>
+                      <span className="result-pill">
+                        {rawDataView === 'raw'
+                          ? `${formatCount(visibleRawRows.length)} / ${formatCount(rawDataRows.length)} rows`
+                          : `${formatCount(filteredRows.length)} processed rows`}
+                      </span>
+                    </div>
+                    <div className="raw-data-toolbar">
+                      <div className="view-toggle" role="tablist" aria-label="Data view selector">
+                        <button
+                          className={rawDataView === 'raw' ? 'is-active' : ''}
+                          onClick={() => setRawDataView('raw')}
+                          type="button"
+                        >
+                          Raw workbook
+                        </button>
+                        <button
+                          className={rawDataView === 'processed' ? 'is-active' : ''}
+                          onClick={() => setRawDataView('processed')}
+                          type="button"
+                        >
+                          Processed data
+                        </button>
+                      </div>
+                      <div className="raw-data-tools">
+                        <label className="search-box">
+                          <Icon name="search" size={16} />
+                          <input
+                            aria-label="Search raw data"
+                            onChange={(event) => setRawDataSearch(event.target.value)}
+                            placeholder="Search rows"
+                            type="search"
+                            value={rawDataSearch}
+                          />
+                        </label>
+                        <div className="raw-data-slicers">
+                          <select
+                            aria-label="Filter by sales organization"
+                            onChange={(event) => setRawDataSlicers((current) => ({ ...current, salesOrganization: event.target.value }))}
+                            value={rawDataSlicers.salesOrganization}
+                          >
+                            <option value="">All organizations</option>
+                            {rawDataOptions.salesOrganization.map((value) => (
+                              <option key={value} value={value}>{value}</option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filter by usage group"
+                            onChange={(event) => setRawDataSlicers((current) => ({ ...current, usage: event.target.value }))}
+                            value={rawDataSlicers.usage}
+                          >
+                            <option value="">All usages</option>
+                            {rawDataOptions.usage.map((value) => (
+                              <option key={value} value={value}>{value}</option>
+                            ))}
+                          </select>
+                          <select
+                            aria-label="Filter by currency"
+                            onChange={(event) => setRawDataSlicers((current) => ({ ...current, currency: event.target.value }))}
+                            value={rawDataSlicers.currency}
+                          >
+                            <option value="">All currencies</option>
+                            {rawDataOptions.currency.map((value) => (
+                              <option key={value} value={value}>{value}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <button
+                          className="button button-outline"
+                          onClick={() => {
+                            setRawDataSearch('')
+                            setRawDataSlicers({ salesOrganization: '', usage: '', currency: '' })
+                          }}
+                          type="button"
+                        >
+                          Clear filters
+                        </button>
+                      </div>
+                    </div>
+                    <div className="table-scroll preview-scroll raw-data-grid">
+                      <table>
+                        <thead>
+                          <tr>
+                            {displayedDataColumns.map((column) => (
+                              <th key={column.key}>
+                                <button
+                                  className="sort-header"
+                                  onClick={() =>
+                                    setRawDataSort((current) => ({
+                                      key: column.key,
+                                      direction: current.key === column.key && current.direction === 'asc' ? 'desc' : 'asc',
+                                    }))
+                                  }
+                                  type="button"
+                                >
+                                  <span>{column.label}</span>
+                                  {rawDataSort.key === column.key && (
+                                    <span className="sort-indicator">{rawDataSort.direction === 'asc' ? '↑' : '↓'}</span>
+                                  )}
+                                </button>
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(rawDataView === 'raw' ? visibleRawRows : filteredRows).map((row, index) => (
+                            <tr key={rawDataView === 'raw' ? `${row.document || 'row'}-${row.rowNumber ?? index}` : `${row.document}-${row.salesOrganization}-${row.usage}-${row.currency}-${index}`}>
+                              {displayedDataColumns.map((column) => (
+                                <td key={column.key}>
+                                  {getDataCellValue(row, column, rawDataView)}
+                                </td>
+                              ))}
+                            </tr>
+                          ))}
+                          {((rawDataView === 'raw' ? visibleRawRows : filteredRows).length === 0) && (
+                            <tr><td className="empty-table" colSpan={displayedDataColumns.length}>No matching rows found.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
         )}
 
         {(status || error) && (

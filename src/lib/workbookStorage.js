@@ -94,6 +94,10 @@ export async function loadWorkbook() {
   })
 }
 
+export function clearWorkbookData() {
+  return runWorkbookTransaction('readwrite', (store) => store.clear())
+}
+
 export function createWorkbookFile(savedWorkbook) {
   if (
     !savedWorkbook?.blob ||

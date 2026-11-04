@@ -2,19 +2,72 @@ import * as XLSX from 'xlsx'
 
 export const CONFIGURATOR_ID = '12MM102101'
 
+
 export const EXCHANGE_RATES = Object.freeze({
+  // Base currency
   INR: 1,
-  AED: 23.5,
-  USD: 90,
-  EUR: 105,
-  GBP: 120,
+
+  // Major currencies
+  USD: 94.84,
+  EUR: 106.19,
+  GBP: 127.22,
+  AED: 25.82,
   RUB: 1.16,
-  CAD: 65,
-  AUD: 60,
-  JPY: 0.65,
-  CNY: 14,
-  SGD: 68,
-})
+
+  // North America
+  CAD: 67.91,
+  MXN: 5.08,
+
+  // Asia Pacific
+  AUD: 66.34,
+  NZD: 53.34,
+  JPY: 0.60,
+  CNY: 14.25,
+  SGD: 74.11,
+  HKD: 12.08,
+  KRW: 0.0704,
+  MYR: 23.25,
+  THB: 2.81,
+  IDR: 0.00522,
+  PHP: 1.49,
+  VND: 0.00369,
+  BDT: 0.76,
+  PKR: 0.34,
+  NPR: 0.63,
+  LKR: 0.29,
+
+  // Europe
+  CHF: 115.68,
+  SEK: 9.68,
+  NOK: 10.20,
+  DKK: 14.18,
+  PLN: 24.00,
+  CZK: 4.35,
+  HUF: 0.29,
+  TRY: 1.90,
+
+  // Middle East
+  SAR: 25.82,
+  QAR: 26.00,
+  KWD: 307.40,
+  BHD: 251.00,
+  OMR: 233.00,
+  JOD: 134.00,
+  ILS: 30.00,
+
+  // Africa
+  ZAR: 5.70,
+  EGP: 1.71,
+  KES: 0.73,
+  NGN: 0.066,
+
+  // South America
+  BRL: 17.22,
+  ARS: 5.95,
+  CLP: 0.092,
+  COP: 0.030
+});
+
 
 const REQUIRED_COLUMNS = {
   document: ['salesdocument', 'Sales document'],
@@ -125,15 +178,24 @@ function buildColumnPositions(headers) {
   return positions
 }
 
-function parseRows(matrix, headerIndex, positions, date1904) {
+function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns, date1904) {
   const records = new Map()
+  const sourceRows = []
   let validSourceRows = 0
 
   for (let index = headerIndex + 1; index < matrix.length; index += 1) {
     const cells = matrix[index] ?? []
     const value = (field) => cells[positions[field]]
     const document = asText(value('document'))
+    const rowNumber = index + 1
+    const sourceValues = (displayMatrix[index] ?? [])
+      .slice(0, sourceColumns.length)
+      .map((cell) => (cell == null ? '' : String(cell)))
+
     if (!document) {
+      if (sourceValues.some((cell) => cell.trim() !== '')) {
+        sourceRows.push({ rowNumber, sourceValues })
+      }
       continue
     }
 
@@ -142,7 +204,6 @@ function parseRows(matrix, headerIndex, positions, date1904) {
     const currency = asText(value('currency')).toUpperCase()
     const amount = parseAmount(value('amount'))
     const date = parseDate(value('date'), date1904)
-    const rowNumber = index + 1
 
     if (!salesOrganization || !Number.isFinite(amount) || !date || !currency) {
       throw new Error(
@@ -160,6 +221,7 @@ function parseRows(matrix, headerIndex, positions, date1904) {
       amount,
       inr: EXCHANGE_RATES[currency] == null ? null : amount * EXCHANGE_RATES[currency],
     }
+    sourceRows.push({ ...record, rowNumber, sourceValues })
     const previous = records.get(document)
 
     if (previous) {
@@ -184,6 +246,7 @@ function parseRows(matrix, headerIndex, positions, date1904) {
     rows: [...records.values()],
     validSourceRows,
     repeatedItemRows: validSourceRows - records.size,
+    sourceRows,
   }
 }
 
@@ -225,7 +288,13 @@ export async function readQuotationWorkbook(file) {
     header: 1,
     defval: null,
     raw: true,
-    blankrows: false,
+    blankrows: true,
+  })
+  const displayMatrix = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: null,
+    raw: false,
+    blankrows: true,
   })
   const headerIndex = findHeaderRow(matrix)
   if (headerIndex < 0) {
@@ -237,15 +306,27 @@ export async function readQuotationWorkbook(file) {
   }
 
   const positions = buildColumnPositions(matrix[headerIndex])
+  const fieldByPosition = new Map(
+    Object.entries(positions).map(([field, position]) => [position, field]),
+  )
+  const sourceHeaders = displayMatrix[headerIndex] ?? matrix[headerIndex]
+  const sourceColumns = matrix[headerIndex].map((header, index) => ({
+    key: fieldByPosition.get(index) ?? `source-${index}`,
+    label: asText(sourceHeaders[index] ?? header) || `Column ${index + 1}`,
+    sourceIndex: index,
+  }))
   const parsed = parseRows(
     matrix,
+    displayMatrix,
     headerIndex,
     positions,
+    sourceColumns,
     Boolean(workbook.Workbook?.WBProps?.date1904),
   )
 
   return {
     ...parsed,
+    sourceColumns,
     fileName: file.name,
     fileSize: file.size,
     sheetName,
