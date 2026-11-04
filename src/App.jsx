@@ -108,6 +108,7 @@ function Icon({ name, size = 18 }) {
 }
 
 function MultiSelect({ label, options, selected, onChange }) {
+  const menuRef = useRef(null)
   const selectedCount = selected.length
   const summary =
     selectedCount === options.length
@@ -115,6 +116,17 @@ function MultiSelect({ label, options, selected, onChange }) {
       : selectedCount === 0
         ? 'None'
         : `${selectedCount} selected`
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event) {
+      if (!menuRef.current?.contains(event.target)) {
+        menuRef.current.open = false
+      }
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [])
 
   function toggle(value) {
     onChange(
@@ -125,7 +137,7 @@ function MultiSelect({ label, options, selected, onChange }) {
   }
 
   return (
-    <details className="filter-menu">
+    <details className="filter-menu" ref={menuRef}>
       <summary>
         <span>{label}</span>
         <span className="filter-summary">{summary}</span>
@@ -387,8 +399,13 @@ function compareRawDataValues(left, right, key) {
   const numericKeys = new Set(['amount', 'inr'])
 
   if (numericKeys.has(key)) {
-    const leftNumber = Number(left)
-    const rightNumber = Number(right)
+    const parseNumericCell = (value) => {
+      if (typeof value === 'number') return value
+      const text = String(value ?? '').replace(/[,\s₹$€£]/g, '')
+      return Number(text)
+    }
+    const leftNumber = parseNumericCell(left)
+    const rightNumber = parseNumericCell(right)
     if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
       return leftNumber - rightNumber
     }
@@ -397,6 +414,30 @@ function compareRawDataValues(left, right, key) {
   const leftText = String(left ?? '')
   const rightText = String(right ?? '')
   return leftText.localeCompare(rightText, undefined, { numeric: true, sensitivity: 'base' })
+}
+
+const PROCESSED_DATA_COLUMNS = [
+  { key: 'document', label: 'Sales document' },
+  { key: 'createdBy', label: 'Created By' },
+  { key: 'salesOrganization', label: 'Sales Organization' },
+  { key: 'usage', label: 'Usage group' },
+  { key: 'currency', label: 'Currency' },
+  { key: 'date', label: 'Date' },
+  { key: 'amount', label: 'Amount' },
+  { key: 'inr', label: 'INR' },
+]
+
+function getDataCellValue(row, column, view) {
+  if (view === 'raw') {
+    return row.sourceValues?.[column.sourceIndex] || '—'
+  }
+  if (column.key === 'amount') {
+    return Number.isFinite(row.amount) ? formatMoney(row.amount, row.currency) : '—'
+  }
+  if (column.key === 'inr') {
+    return row.inr != null ? formatMoney(row.inr, 'INR') : '—'
+  }
+  return row[column.key] || '—'
 }
 
 function App() {
@@ -416,6 +457,7 @@ function AppShell() {
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
   const [rawDataRows, setRawDataRows] = useState([])
+  const [rawDataColumns, setRawDataColumns] = useState([])
   const [rawDataSearch, setRawDataSearch] = useState('')
   const [rawDataSort, setRawDataSort] = useState({ key: 'date', direction: 'desc' })
   const [rawDataSlicers, setRawDataSlicers] = useState({
@@ -504,6 +546,7 @@ function AppShell() {
         const importedBounds = getDateBounds(imported.rows)
         setRows(imported.rows)
         setRawDataRows(imported.sourceRows ?? imported.rows)
+        setRawDataColumns(imported.sourceColumns ?? [])
         setSelections({
           organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
           usages: [...new Set(imported.rows.map((row) => row.usage))],
@@ -605,10 +648,11 @@ function AppShell() {
   }, [bounds.max, bounds.min, dateFrom, dateTo, rows.length])
 
   const rawDataOptions = useMemo(() => ({
-    salesOrganization: [...new Set(rawDataRows.map((row) => row.salesOrganization))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
-    usage: [...new Set(rawDataRows.map((row) => row.usage))].sort(),
-    currency: [...new Set(rawDataRows.map((row) => row.currency))].sort(),
+    salesOrganization: [...new Set(rawDataRows.map((row) => row.salesOrganization).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    usage: [...new Set(rawDataRows.map((row) => row.usage).filter(Boolean))].sort(),
+    currency: [...new Set(rawDataRows.map((row) => row.currency).filter(Boolean))].sort(),
   }), [rawDataRows])
+  const displayedDataColumns = rawDataView === 'raw' ? rawDataColumns : PROCESSED_DATA_COLUMNS
 
   const visibleRawRows = useMemo(() => {
     const query = rawDataSearch.trim().toLowerCase()
@@ -623,6 +667,7 @@ function AppShell() {
           date: row.date,
           amount: String(row.amount),
           inr: row.inr != null ? String(row.inr) : '',
+          sourceValues: row.sourceValues?.join(' '),
         }).some((value) => String(value).toLowerCase().includes(query))
 
         const matchesSalesOrganization = !rawDataSlicers.salesOrganization || row.salesOrganization === rawDataSlicers.salesOrganization
@@ -633,9 +678,12 @@ function AppShell() {
       })
       .sort((a, b) => {
         const direction = rawDataSort.direction === 'asc' ? 1 : -1
-        return compareRawDataValues(a[rawDataSort.key], b[rawDataSort.key], rawDataSort.key) * direction
+        const sourceColumn = rawDataColumns.find((column) => column.key === rawDataSort.key)
+        const left = sourceColumn ? a.sourceValues?.[sourceColumn.sourceIndex] : a[rawDataSort.key]
+        const right = sourceColumn ? b.sourceValues?.[sourceColumn.sourceIndex] : b[rawDataSort.key]
+        return compareRawDataValues(left, right, rawDataSort.key) * direction
       })
-  }, [rawDataRows, rawDataSearch, rawDataSlicers, rawDataSort])
+  }, [rawDataColumns, rawDataRows, rawDataSearch, rawDataSlicers, rawDataSort])
 
   const selectedRows = useMemo(() => {
     if (dateError) return []
@@ -765,6 +813,7 @@ function AppShell() {
       const importedBounds = getDateBounds(imported.rows)
       setRows(imported.rows)
       setRawDataRows(imported.sourceRows ?? imported.rows)
+      setRawDataColumns(imported.sourceColumns ?? [])
       setRawDataSearch('')
       setRawDataSort({ key: 'date', direction: 'desc' })
       setRawDataSlicers({
@@ -844,6 +893,7 @@ function AppShell() {
 
     setRows([])
     setRawDataRows([])
+    setRawDataColumns([])
     setRawDataSearch('')
     setRawDataSort({ key: 'date', direction: 'desc' })
     setRawDataSlicers({ salesOrganization: '', usage: '', currency: '' })
@@ -1090,6 +1140,50 @@ function AppShell() {
                   <Icon name="upload" size={16} /> Replace workbook
                 </button>
               </div>
+            </section>
+
+            <section aria-label="Presentation filters" className="presentation-filters">
+              <MultiSelect
+                label="Sales Organization"
+                onChange={(values) =>
+                  setSelections((current) => ({ ...current, organizations: values }))
+                }
+                options={options.organizations}
+                selected={selections.organizations}
+              />
+              <label className="outlier-filter">
+                <span>Outlier filter</span>
+                <select
+                  aria-label="Presentation outlier filter"
+                  onChange={(event) => setOutlierFilter(event.target.value)}
+                  value={outlierFilter}
+                >
+                  <option value="all">With outlier (include all)</option>
+                  <option value="zero">Without 0 value quotations</option>
+                  <option value="iqr">Without 1.5 IQR outliers</option>
+                  <option value="mad">Without Modified Z-Score (MAD) outliers</option>
+                  <option value="percentile">Percentile range</option>
+                </select>
+                {outlierFilter === 'percentile' && (
+                  <span className="percentile-control">
+                    <input
+                      aria-label="Percent excluded from each percentile tail"
+                      max="49"
+                      min="0"
+                      onChange={(event) => {
+                        const value = Number(event.target.value)
+                        if (event.target.value !== '' && Number.isFinite(value) && value >= 0 && value <= 49) {
+                          setPercentileTail(value)
+                        }
+                      }}
+                      step="0.5"
+                      type="number"
+                      value={percentileTail}
+                    />
+                    <span>%</span>
+                  </span>
+                )}
+              </label>
             </section>
 
             <section aria-label="Dashboard filters" className="panel filter-panel">
@@ -1492,16 +1586,7 @@ function AppShell() {
                       <table>
                         <thead>
                           <tr>
-                            {[
-                              { key: 'document', label: 'Sales document' },
-                              { key: 'createdBy', label: 'Created By' },
-                              { key: 'salesOrganization', label: 'Sales Organization' },
-                              { key: 'usage', label: 'Usage group' },
-                              { key: 'currency', label: 'Currency' },
-                              { key: 'date', label: 'Date' },
-                              { key: 'amount', label: 'Amount' },
-                              { key: 'inr', label: 'INR' },
-                            ].map((column) => (
+                            {displayedDataColumns.map((column) => (
                               <th key={column.key}>
                                 <button
                                   className="sort-header"
@@ -1525,18 +1610,15 @@ function AppShell() {
                         <tbody>
                           {(rawDataView === 'raw' ? visibleRawRows : filteredRows).map((row, index) => (
                             <tr key={rawDataView === 'raw' ? `${row.document || 'row'}-${row.rowNumber ?? index}` : `${row.document}-${row.salesOrganization}-${row.usage}-${row.currency}-${index}`}>
-                              <td>{row.document || '—'}</td>
-                              <td>{row.createdBy || '—'}</td>
-                              <td>{row.salesOrganization || '—'}</td>
-                              <td>{row.usage || '—'}</td>
-                              <td>{row.currency || '—'}</td>
-                              <td>{row.date || '—'}</td>
-                              <td>{Number.isFinite(row.amount) ? formatMoney(row.amount, row.currency) : '—'}</td>
-                              <td>{row.inr != null ? formatMoney(row.inr, 'INR') : '—'}</td>
+                              {displayedDataColumns.map((column) => (
+                                <td key={column.key}>
+                                  {getDataCellValue(row, column, rawDataView)}
+                                </td>
+                              ))}
                             </tr>
                           ))}
                           {((rawDataView === 'raw' ? visibleRawRows : filteredRows).length === 0) && (
-                            <tr><td className="empty-table" colSpan="8">No matching rows found.</td></tr>
+                            <tr><td className="empty-table" colSpan={displayedDataColumns.length}>No matching rows found.</td></tr>
                           )}
                         </tbody>
                       </table>

@@ -21,6 +21,22 @@
   display: none;
 }
 
+.presentation-filters {
+  display: none;
+}
+
+.app-shell.is-presenting .presentation-filters {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: -8px 0 18px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
 .app-shell.is-presenting .workspace {
   width: min(1880px, calc(100% - 96px));
   min-height: 100vh;

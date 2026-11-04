@@ -178,7 +178,7 @@ function buildColumnPositions(headers) {
   return positions
 }
 
-function parseRows(matrix, headerIndex, positions, date1904) {
+function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns, date1904) {
   const records = new Map()
   const sourceRows = []
   let validSourceRows = 0
@@ -187,7 +187,15 @@ function parseRows(matrix, headerIndex, positions, date1904) {
     const cells = matrix[index] ?? []
     const value = (field) => cells[positions[field]]
     const document = asText(value('document'))
+    const rowNumber = index + 1
+    const sourceValues = (displayMatrix[index] ?? [])
+      .slice(0, sourceColumns.length)
+      .map((cell) => (cell == null ? '' : String(cell)))
+
     if (!document) {
+      if (sourceValues.some((cell) => cell.trim() !== '')) {
+        sourceRows.push({ rowNumber, sourceValues })
+      }
       continue
     }
 
@@ -196,7 +204,6 @@ function parseRows(matrix, headerIndex, positions, date1904) {
     const currency = asText(value('currency')).toUpperCase()
     const amount = parseAmount(value('amount'))
     const date = parseDate(value('date'), date1904)
-    const rowNumber = index + 1
 
     if (!salesOrganization || !Number.isFinite(amount) || !date || !currency) {
       throw new Error(
@@ -214,7 +221,7 @@ function parseRows(matrix, headerIndex, positions, date1904) {
       amount,
       inr: EXCHANGE_RATES[currency] == null ? null : amount * EXCHANGE_RATES[currency],
     }
-    sourceRows.push({ ...record, rowNumber })
+    sourceRows.push({ ...record, rowNumber, sourceValues })
     const previous = records.get(document)
 
     if (previous) {
@@ -281,7 +288,13 @@ export async function readQuotationWorkbook(file) {
     header: 1,
     defval: null,
     raw: true,
-    blankrows: false,
+    blankrows: true,
+  })
+  const displayMatrix = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: null,
+    raw: false,
+    blankrows: true,
   })
   const headerIndex = findHeaderRow(matrix)
   if (headerIndex < 0) {
@@ -293,15 +306,27 @@ export async function readQuotationWorkbook(file) {
   }
 
   const positions = buildColumnPositions(matrix[headerIndex])
+  const fieldByPosition = new Map(
+    Object.entries(positions).map(([field, position]) => [position, field]),
+  )
+  const sourceHeaders = displayMatrix[headerIndex] ?? matrix[headerIndex]
+  const sourceColumns = matrix[headerIndex].map((header, index) => ({
+    key: fieldByPosition.get(index) ?? `source-${index}`,
+    label: asText(sourceHeaders[index] ?? header) || `Column ${index + 1}`,
+    sourceIndex: index,
+  }))
   const parsed = parseRows(
     matrix,
+    displayMatrix,
     headerIndex,
     positions,
+    sourceColumns,
     Boolean(workbook.Workbook?.WBProps?.date1904),
   )
 
   return {
     ...parsed,
+    sourceColumns,
     fileName: file.name,
     fileSize: file.size,
     sheetName,

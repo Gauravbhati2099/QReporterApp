@@ -222,6 +222,10 @@ The main app screen includes:
 
 These controls update the working dataset without reloading the workbook.
 
+### Raw workbook and processed data
+
+The Raw data page offers separate Raw workbook and Processed data views. The raw view displays the original worksheet column headings and cell values (including extra columns not used by the report); it does not add derived Usage or INR fields. The processed view shows normalized quotation records and converted INR values. Both views support searching, sorting, and the available slicers.
+
 ### KPI cards
 
 The dashboard shows high-level KPIs:
@@ -266,7 +270,7 @@ A search box and per-column dropdown filters allow fast drilling into the summar
 The app includes a presentation layout toggle:
 
 - enlarges KPI cards and charts
-- hides filters/table details for audience view
+- keeps Sales Organization and Outlier filters available while hiding the full dashboard filter panel and summary table
 - optionally enters fullscreen when supported
 
 This makes it easier to present the report on a screen during meetings.
@@ -287,8 +291,8 @@ Key functions:
   - scans the first 30 rows for the required columns
 - `buildColumnPositions(headers)`
   - maps normalized column names to their index
-- `parseRows(matrix, headerIndex, positions, date1904)`
-  - converts raw spreadsheet values into normalized records
+- `parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns, date1904)`
+  - keeps worksheet display values for the raw workbook view while converting a separate set of rows into normalized report records
 - `parseAmount(value)`
   - strips symbols, commas, and parenthesized negatives
 - `parseDate(value, date1904)`
