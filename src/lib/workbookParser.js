@@ -1,4 +1,11 @@
 import * as XLSX from 'xlsx'
+import {
+  getProcurementField,
+  getProcurementRowDate,
+  isProcurementHeaderRow,
+  buildProcurementSummaryTables,
+  normalizeProcurementCell,
+} from './procurementReports'
 
 export const CONFIGURATOR_ID = '12MM102101'
 
@@ -290,6 +297,7 @@ export async function readQuotationWorkbook(file) {
     raw: true,
     blankrows: true,
   })
+  const date1904 = Boolean(workbook.Workbook?.WBProps?.date1904)
   const displayMatrix = XLSX.utils.sheet_to_json(sheet, {
     header: 1,
     defval: null,
@@ -298,10 +306,77 @@ export async function readQuotationWorkbook(file) {
   })
   const headerIndex = findHeaderRow(matrix)
   if (headerIndex < 0) {
+    const procurementHeaderIndex = matrix.findIndex(
+      (row, index) => index < 30 && isProcurementHeaderRow(row),
+    )
+    if (procurementHeaderIndex >= 0) {
+      const sourceHeaders = matrix[procurementHeaderIndex] ?? []
+      const displayHeaders = displayMatrix[procurementHeaderIndex] ?? sourceHeaders
+      const sourceColumns = sourceHeaders.map((header, index) => ({
+        key: `source-${index}`,
+        field: getProcurementField(header),
+        label: asText(displayHeaders[index] ?? header) || `Column ${index + 1}`,
+        sourceIndex: index,
+      }))
+      const rows = []
+
+      for (let index = procurementHeaderIndex + 1; index < matrix.length; index += 1) {
+        const cells = matrix[index] ?? []
+        const sourceValues = (displayMatrix[index] ?? [])
+          .slice(0, sourceColumns.length)
+          .map((cell) => (cell == null ? '' : String(cell)))
+        if (!sourceValues.some((value) => value.trim())) continue
+
+        const row = { rowNumber: index + 1, sourceValues }
+        for (const column of sourceColumns) {
+          if (!column.field) continue
+          const value = normalizeProcurementCell(
+            column.field,
+            cells[column.sourceIndex],
+            date1904,
+          )
+          if (value !== '' && (row[column.field] == null || row[column.field] === '')) {
+            row[column.field] = value
+          }
+        }
+        row.vendorName ||= row.miroVendorName || ''
+        row.gstin ||= row.miroGstin || ''
+        row.pan ||= row.miroPan || ''
+        row.salesOrganization = String(row.plant ?? '')
+        row.document = String(row.poNumber ?? row.prNumber ?? row.grnNumber ?? row.rowNumber)
+        row.usage = String(row.materialGroup ?? 'Procurement')
+        row.currency = String(row.currency ?? row.conversionCurrency ?? '')
+        row.date = getProcurementRowDate(row)
+        row.amount = Number(row.poTotal ?? row.grnValue ?? row.miroValue) || 0
+        row.inr = null
+        rows.push(row)
+      }
+
+      if (!rows.length) {
+        throw new Error('No procurement records were found below the column headers.')
+      }
+
+      return {
+        rows,
+        validSourceRows: rows.length,
+        repeatedItemRows: 0,
+        sourceRows: rows,
+        summaryTables: buildProcurementSummaryTables(
+          rows,
+          new Set(sourceColumns.map((column) => column.field).filter(Boolean)),
+        ),
+        sourceColumns,
+        datasetType: 'procurement',
+        fileName: file.name,
+        fileSize: file.size,
+        sheetName,
+      }
+    }
+
     throw new Error(
-      `Could not find the required columns: ${Object.values(REQUIRED_COLUMNS)
+      `Could not identify a supported workbook. Quotation reports require ${Object.values(REQUIRED_COLUMNS)
         .map(([, label]) => label)
-        .join(', ')}.`,
+        .join(', ')}. Procurement MIS requires Plant, Vendor (or Name), PO no., and PO Item No.; add PR, GRN, MIRO, GST, and payment columns for additional reports.`,
     )
   }
 
@@ -321,7 +396,7 @@ export async function readQuotationWorkbook(file) {
     headerIndex,
     positions,
     sourceColumns,
-    Boolean(workbook.Workbook?.WBProps?.date1904),
+    date1904,
   )
 
   return {
@@ -330,5 +405,6 @@ export async function readQuotationWorkbook(file) {
     fileName: file.name,
     fileSize: file.size,
     sheetName,
+    datasetType: 'quotation',
   }
 }

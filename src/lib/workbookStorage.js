@@ -53,7 +53,7 @@ async function runWorkbookTransaction(mode, action) {
   })
 }
 
-export function saveWorkbook(file, sheetName) {
+export function saveWorkbook(file, sheetName, datasetType = 'quotation') {
   return runWorkbookTransaction('readwrite', (store) =>
     store.put(
       {
@@ -62,6 +62,7 @@ export function saveWorkbook(file, sheetName) {
         size: file.size,
         type: file.type,
         sheetName,
+        datasetType,
       },
       WORKBOOK_KEY,
     ),

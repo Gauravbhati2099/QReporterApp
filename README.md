@@ -1,6 +1,6 @@
 # QReporter App
 
-QReporter is a browser-based dashboard for SAP quotation data. It reads XLSX workbooks exported from SAP, validates the required columns, removes duplicate or conflicting records, and turns the raw sales document data into interactive summaries, KPI cards, charts, and CSV exports.
+QReporter is a browser-based dashboard for SAP quotation and procurement data. It detects the workbook structure, validates the required columns for that data type, and displays only the reports supported by the uploaded XLSX.
 
 The application is intentionally local-first: the workbook is processed in the browser, no backend API is required, and the latest workbook is stored in IndexedDB for automatic restore on the next visit.
 
@@ -14,7 +14,16 @@ This project helps sales and reporting teams answer questions such as:
 - How do the values compare across currencies after conversion to INR?
 - Which records were created manually versus by the configurator?
 
-The app is designed for SAP quotation exports that contain sales document details, dates, currency, value, and the creator.
+The app supports SAP quotation exports and procurement dumps containing PO item details. Procurement reports use document-level summary tables prepared during import; reports that need unavailable source columns are not shown.
+
+## Supported workbook types
+
+The upload screen detects the workbook type automatically:
+
+- **Quotation reports:** Sales document, Created By, Sales Organization, Document Currency, Net Value (Header), and Document Date.
+- **Procurement MIS:** Plant, Vendor (or Name), PO no., and PO Item No. Additional reports become available when their required PR, GRN, MIRO, GST, payment, logistics, or status columns are present.
+
+Procurement report cards are filtered against each report's fixed required columns. Procurement summaries retain PO items, GRN items, and MIRO documents at their distinct transaction levels; PO values are not multiplied by multiple GRNs. Currencies are not converted unless the workbook provides the necessary exchange-rate data, and blank MIRO references are not treated as proof of unpaid invoices.
 
 ## How it works
 
@@ -43,7 +52,7 @@ This keeps the UI responsive even when large spreadsheets are processed.
 - searches the first 30 rows for the required SAP headers
 - validates the columns needed for the report
 
-Required columns:
+Quotation workbook required columns:
 
 - Sales document
 - Created By
@@ -52,7 +61,7 @@ Required columns:
 - Net Value (Header)
 - Document Date
 
-If any required column is missing, the import fails with a clear message.
+If a quotation workbook is missing any required column, the import fails with a clear message. Procurement workbooks are detected and validated separately.
 
 ### 4. Record-level processing
 
@@ -221,6 +230,12 @@ The main app screen includes:
 - Reset filters button
 
 These controls update the working dataset without reloading the workbook.
+
+### Report selection
+
+After a workbook is loaded, the Reports page presents quotation analysis cards or the procurement report library, depending on the detected workbook type. Procurement has six focused, independent reports: Procurement Overview, Supplier Performance, PO & Receipt Fulfillment, Invoice, Tax & Payment, Exceptions & Data Quality, and TAT Analysis. The library search matches report names, descriptions, and document tags, and cards are shown only when the uploaded workbook has the required source columns.
+
+Each procurement report uses import-time summary tables at the appropriate PO-item, GRN-item, MIRO-document, or exception/event level. Its filters, KPIs, chart groupings, summary table, business checks, presentation mode, print layout, and CSV export are scoped to that report. Money is kept in source currencies; currency charts and KPI totals are separated by currency rather than compared or added together. TAT uses elapsed calendar days for PR-to-PO, PO-to-vendor-finalization, PO-to-GRN/MRN, GRN/MRN-to-MIRO-posting, and MIRO-posting-to-clearing. Each completed stage can be selected in the TAT stage filter; vendor-finalization TAT is shown only when a recognized supplier confirmation date exists in the source workbook. The "Completed stage intervals" KPI counts deduplicated linked stage pairs with both dates after current filters; one PO can contribute an interval to more than one stage.
 
 ### Raw workbook and processed data
 
@@ -451,4 +466,4 @@ npm run preview
 
 ## Summary
 
-QReporter converts raw SAP quotation exports into a clean, interactive, browser-only reporting dashboard. It validates workbook structure, removes bad or duplicate rows, computes financial summaries by sales organization and currency, applies advanced outlier filters, and presents the results as KPIs, charts, and CSV exports. The entire workflow is optimized for local analysis and quick decision-making without a backend service.
+QReporter converts SAP quotation exports and procurement workbooks into interactive, browser-only reporting dashboards. It validates workbook structure, prepares transaction-level procurement summaries during import, and presents source-grounded KPIs, charts, tables, insights, and CSV exports. The entire workflow runs locally without a backend service.

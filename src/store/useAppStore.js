@@ -23,6 +23,8 @@ const createFieldSetter = (set, field) => (value) =>
 export const useAppStore = create((set) => ({
   isRestoring: true,
   rows: [],
+  datasetType: 'quotation',
+  summaryTables: null,
   selections: initialSelections(),
   dateFrom: '',
   dateTo: '',
@@ -40,6 +42,8 @@ export const useAppStore = create((set) => ({
   isPresenting: false,
   setIsRestoring: createFieldSetter(set, 'isRestoring'),
   setRows: createFieldSetter(set, 'rows'),
+  setDatasetType: createFieldSetter(set, 'datasetType'),
+  setSummaryTables: createFieldSetter(set, 'summaryTables'),
   setSelections: createFieldSetter(set, 'selections'),
   setDateFrom: createFieldSetter(set, 'dateFrom'),
   setDateTo: createFieldSetter(set, 'dateTo'),

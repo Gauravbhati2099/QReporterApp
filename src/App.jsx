@@ -18,6 +18,10 @@ import {
   getPercentileBounds,
   getSummary,
 } from './lib/reportData'
+import {
+  getAvailableProcurementReports,
+  PROCUREMENT_REPORTS,
+} from './lib/procurementReports'
 import { readWorkbookInWorker } from './lib/workbookClient'
 import {
   clearWorkbookData,
@@ -26,6 +30,10 @@ import {
   saveWorkbook,
 } from './lib/workbookStorage'
 import { useAppStore } from './store/useAppStore'
+import {
+  ProcurementReportCatalog,
+  ProcurementReportDashboard,
+} from './ProcurementReports'
 import './App.css'
 
 const FILTERS = [
@@ -71,6 +79,30 @@ const CHART_GROUPS = [
   { key: 'salesOrganization', label: 'Sales Organization' },
   { key: 'usage', label: 'Usage group' },
   { key: 'currency', label: 'Currency' },
+]
+
+const REPORT_CARDS = [
+  {
+    id: 'overview',
+    title: 'Quotation overview',
+    description: 'Review quotation volume, converted value, and organization performance.',
+    groupBy: 'salesOrganization',
+    icon: 'chart',
+  },
+  {
+    id: 'usage',
+    title: 'Usage analysis',
+    description: 'Compare manual quotations with configurator-generated quotations.',
+    groupBy: 'usage',
+    icon: 'check',
+  },
+  {
+    id: 'currency',
+    title: 'Currency breakdown',
+    description: 'Explore quotation volume and converted value across currencies.',
+    groupBy: 'currency',
+    icon: 'file',
+  },
 ]
 
 function Icon({ name, size = 18 }) {
@@ -468,6 +500,8 @@ function AppShell() {
   const [rawDataView, setRawDataView] = useState('raw')
   const isRestoring = useAppStore((state) => state.isRestoring)
   const rows = useAppStore((state) => state.rows)
+  const datasetType = useAppStore((state) => state.datasetType)
+  const summaryTables = useAppStore((state) => state.summaryTables)
   const selections = useAppStore((state) => state.selections)
   const dateFrom = useAppStore((state) => state.dateFrom)
   const dateTo = useAppStore((state) => state.dateTo)
@@ -485,6 +519,8 @@ function AppShell() {
   const isPresenting = useAppStore((state) => state.isPresenting)
   const setIsRestoring = useAppStore((state) => state.setIsRestoring)
   const setRows = useAppStore((state) => state.setRows)
+  const setDatasetType = useAppStore((state) => state.setDatasetType)
+  const setSummaryTables = useAppStore((state) => state.setSummaryTables)
   const setSelections = useAppStore((state) => state.setSelections)
   const setDateFrom = useAppStore((state) => state.setDateFrom)
   const setDateTo = useAppStore((state) => state.setDateTo)
@@ -545,6 +581,8 @@ function AppShell() {
 
         const importedBounds = getDateBounds(imported.rows)
         setRows(imported.rows)
+        setDatasetType(imported.datasetType ?? savedWorkbook.datasetType ?? 'quotation')
+        setSummaryTables(imported.summaryTables ?? null)
         setRawDataRows(imported.sourceRows ?? imported.rows)
         setRawDataColumns(imported.sourceColumns ?? [])
         setSelections({
@@ -560,7 +598,6 @@ function AppShell() {
           sheet: savedWorkbook.sheetName,
         })
         setStatus('Saved workbook restored from this browser.')
-        navigate('/dashboard', { replace: true })
       } catch (caught) {
         if (active) {
           setError(
@@ -587,6 +624,8 @@ function AppShell() {
     setRows,
     setSelections,
     setStatus,
+    setDatasetType,
+    setSummaryTables,
   ])
 
   useEffect(() => {
@@ -607,10 +646,10 @@ function AppShell() {
   }, [setIsPresenting])
 
   useEffect(() => {
-    if (rows.length > 0 && location.pathname === '/') {
-      navigate('/dashboard', { replace: true })
+    if ((rows.length > 0 || datasetType === 'procurement') && location.pathname === '/') {
+      navigate('/reports', { replace: true })
     }
-  }, [location.pathname, navigate, rows.length])
+  }, [datasetType, location.pathname, navigate, rows.length])
 
   const bounds = useMemo(() => getDateBounds(rows), [rows])
   const outlierRows = useMemo(() => getOutlierRows(rows), [rows])
@@ -794,7 +833,7 @@ function AppShell() {
     try {
       const imported = await readWorkbookInWorker(file)
       try {
-        await saveWorkbook(file, imported.sheetName)
+        await saveWorkbook(file, imported.sheetName, imported.datasetType)
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'QuotaExceededError') {
           throw new Error(
@@ -812,6 +851,8 @@ function AppShell() {
 
       const importedBounds = getDateBounds(imported.rows)
       setRows(imported.rows)
+      setDatasetType(imported.datasetType ?? 'quotation')
+      setSummaryTables(imported.summaryTables ?? null)
       setRawDataRows(imported.sourceRows ?? imported.rows)
       setRawDataColumns(imported.sourceColumns ?? [])
       setRawDataSearch('')
@@ -838,13 +879,15 @@ function AppShell() {
       setOutlierFilter('all')
       setQuery('')
       setStatus(
-        `${formatCount(imported.rows.length)} quotation(s) loaded and saved in this browser${
+        `${formatCount(imported.rows.length)} ${
+          imported.datasetType === 'procurement' ? 'procurement source row(s)' : 'quotation(s)'
+        } loaded and saved in this browser${
           imported.repeatedItemRows
             ? ` · ${formatCount(imported.repeatedItemRows)} repeated item row(s) excluded`
             : ''
         }. Previous workbook replaced.`,
       )
-      navigate('/dashboard')
+      navigate('/reports')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'The workbook could not be loaded.')
     } finally {
@@ -899,6 +942,8 @@ function AppShell() {
     setRawDataSlicers({ salesOrganization: '', usage: '', currency: '' })
     setRawDataView('raw')
     setSelections({ organizations: [], usages: [], currencies: [] })
+    setDatasetType('quotation')
+    setSummaryTables(null)
     setDateFrom('')
     setDateTo('')
     setGroupBy('salesOrganization')
@@ -956,16 +1001,21 @@ function AppShell() {
             <span className="brand-mark"><Icon name="chart" size={20} /></span>
             <span className="brand-name">qreport<span>er</span></span>
           </a>
-          {rows.length > 0 && (
+          {(rows.length > 0 || datasetType === 'procurement') && (
             <nav aria-label="Main pages" className="topbar-nav">
-              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/dashboard">Dashboard</NavLink>
-              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
-              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
+              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/reports">Reports</NavLink>
+              {datasetType !== 'procurement' && (
+                <>
+                  <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/dashboard">Dashboard</NavLink>
+                  <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
+                  <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
+                </>
+              )}
             </nav>
           )}
         </div>
         <div className="topbar-actions">
-          {rows.length > 0 && (
+          {(rows.length > 0 || datasetType === 'procurement') && (
             <>
               <button
                 className="button button-outline"
@@ -1047,10 +1097,10 @@ function AppShell() {
                   onDrop={handleDrop}
                 >
                   <div className="welcome-copy">
-                    <div className="eyebrow"><span className="eyebrow-line" /> QUOTATION INTELLIGENCE</div>
-                    <h1>Your sales data,<br /><span>finally in focus.</span></h1>
+                    <div className="eyebrow"><span className="eyebrow-line" /> Quotation & procurement reporting</div>
+                    <h1>Reports for your<br /><span>SAP workbook.</span></h1>
                     <p>
-                      Turn an SAP quotation workbook into an interactive report.
+                      Turn an SAP quotation or procurement workbook into interactive reports.
                       Your workbook stays in this browser — nothing is sent to a server.
                     </p>
                     <div className="welcome-actions">
@@ -1064,7 +1114,7 @@ function AppShell() {
                         {isReading ? 'Reading workbook…' : 'Upload workbook'}
                         {!isReading && <Icon name="arrow" size={16} />}
                       </button>
-                      <span className="file-note">XLSX format · saved on this device</span>
+                      <span className="file-note">XLSX format · quotation or procurement · saved on this device</span>
                     </div>
                   </div>
                   <div className="upload-card">
@@ -1075,8 +1125,8 @@ function AppShell() {
                           <i /><i /><i /><i /><i /><i /><i /><i /><i />
                         </div>
                       </div>
-                      <div className="floating-stat stat-one"><span className="stat-dot blue" /> Sales Org <strong>2070</strong></div>
-                      <div className="floating-stat stat-two"><span className="stat-dot green" /> Quotations <strong>3,265</strong></div>
+                      <div className="floating-stat stat-one"><span className="stat-dot blue" /> Workbook <strong>SAP</strong></div>
+                      <div className="floating-stat stat-two"><span className="stat-dot green" /> Reports <strong>Auto-detected</strong></div>
                     </div>
                     <button
                       className="drop-target"
@@ -1089,11 +1139,16 @@ function AppShell() {
                       <Icon name="arrow" size={16} />
                     </button>
                     <div className="requirements">
-                      <span>Required columns</span>
-                      <div className="required-chips">
-                        {['Sales document', 'Sales Organization', 'Document Date', 'Document Currency', 'Net Value (Header)', 'Created By'].map((column) => (
-                          <span key={column}><Icon name="check" size={12} />{column}</span>
-                        ))}
+                      <span>Supported workbook types · detected automatically</span>
+                      <div className="workbook-requirement-list">
+                        <p>
+                          <b>Quotation reports</b>
+                          <span>Sales document · Sales Organization · Document Date · Document Currency · Net Value (Header) · Created By</span>
+                        </p>
+                        <p>
+                          <b>Procurement MIS</b>
+                          <span>Plant · Vendor or Name · PO no. · PO Item No. · add PR / GRN / MIRO / GST / payment / logistics fields to unlock matching reports</span>
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -1101,14 +1156,124 @@ function AppShell() {
               }
             />
             <Route
+              path="/reports"
+              element={
+                datasetType === 'procurement' ? (
+                  <ProcurementReportCatalog
+                    columns={rawDataColumns}
+                    fileName={fileInfo?.name}
+                    navigate={navigate}
+                    sourceRowCount={summaryTables?.sourceRecordCount ?? rows.length}
+                    summaryTables={summaryTables}
+                  />
+                ) : rows.length ? (
+                  <section aria-labelledby="report-selection-title" className="report-selection">
+                    <div className="report-selection-heading">
+                      <div>
+                        <div className="eyebrow"><span className="eyebrow-line" /> REPORT LIBRARY</div>
+                        <h1 id="report-selection-title">Choose a report</h1>
+                        <p>
+                          Explore different views of {fileInfo?.name || 'your quotation workbook'}.
+                          {' '}Choose a report to get started.
+                        </p>
+                      </div>
+                      <div className="report-selection-summary">
+                        <span>Loaded dataset</span>
+                        <strong>{formatCount(rows.length)} quotations</strong>
+                        <small>{formatCount(options.organizations.length)} sales organizations</small>
+                      </div>
+                    </div>
+                    <div className="report-card-grid">
+                      {REPORT_CARDS.map((report, index) => (
+                        <button
+                          className={`report-card report-card-${report.id}`}
+                          key={report.id}
+                          onClick={() => {
+                            setGroupBy(report.groupBy)
+                            navigate('/dashboard')
+                          }}
+                          type="button"
+                        >
+                          <span className="report-card-topline">
+                            <span className="report-card-icon"><Icon name={report.icon} size={20} /></span>
+                            <span className="report-card-label">REPORT 0{index + 1}</span>
+                          </span>
+                          <span className="report-card-copy">
+                            <strong>{report.title}</strong>
+                            <span>{report.description}</span>
+                          </span>
+                          <span className="report-card-meta">
+                            {report.id === 'overview'
+                              ? `${formatCount(options.organizations.length)} organizations · ${formatCount(options.currencies.length)} currencies`
+                              : report.id === 'usage'
+                                ? `${formatCount(options.usages.length)} usage groups · ${formatCount(rows.length)} quotations`
+                                : `${formatCount(options.currencies.length)} currencies · ${formatCount(rows.length)} quotations`}
+                          </span>
+                          <span className="report-card-action">
+                            Open report <Icon name="arrow" size={16} />
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <p className="report-selection-note">
+                      Reports are generated in your browser from the currently loaded workbook.
+                    </p>
+                  </section>
+                ) : (
+                  <Navigate to="/" replace />
+                )
+              }
+            />
+            <Route
+              path="/reports/:reportId"
+              element={
+                datasetType === 'procurement' ? (
+                  (() => {
+                    const reportId = location.pathname.split('/').pop()
+                    const availableFields = new Set(
+                      rawDataColumns.map((column) => column.field).filter(Boolean),
+                    )
+                    const report = getAvailableProcurementReports(
+                      PROCUREMENT_REPORTS,
+                      availableFields,
+                    ).find((item) => item.id === reportId)
+                    return report ? (
+                      <ProcurementReportDashboard
+                        columns={rawDataColumns}
+                        fileName={fileInfo?.name}
+                        isPresenting={isPresenting}
+                        navigate={navigate}
+                        onTogglePresentation={togglePresentationMode}
+                        report={report}
+                        summaryTables={summaryTables}
+                      />
+                    ) : <Navigate to="/reports" replace />
+                  })()
+                ) : <Navigate to="/reports" replace />
+              }
+            />
+            <Route
               path="/dashboard"
               element={
-                rows.length ? (
+                datasetType !== 'procurement' && rows.length ? (
                   <>
                     <section className="page-heading">
               <div>
-                <div className="eyebrow"><span className="eyebrow-line" /> SALES OVERVIEW</div>
-                <h1>Quotation dashboard</h1>
+                <div className="eyebrow">
+                  <span className="eyebrow-line" />
+                  {groupBy === 'usage'
+                    ? 'USAGE ANALYSIS'
+                    : groupBy === 'currency'
+                      ? 'CURRENCY ANALYSIS'
+                      : 'SALES OVERVIEW'}
+                </div>
+                <h1>
+                  {groupBy === 'usage'
+                    ? 'Usage analysis'
+                    : groupBy === 'currency'
+                      ? 'Currency breakdown'
+                      : 'Quotation overview'}
+                </h1>
                 <p className="page-subtitle">
                   {dateFrom
                     ? dateTo
@@ -1450,7 +1615,7 @@ function AppShell() {
             <Route
               path="/steps"
               element={
-                rows.length ? (
+                datasetType !== 'procurement' && rows.length ? (
                   <section className="panel pipeline-panel page-section">
                     <div className="section-heading">
                       <div>
@@ -1497,7 +1662,7 @@ function AppShell() {
             <Route
               path="/raw-data"
               element={
-                rows.length ? (
+                datasetType !== 'procurement' && rows.length ? (
                   <section className="panel preview-panel page-section">
                     <div className="table-heading">
                       <div>
@@ -1642,7 +1807,7 @@ function AppShell() {
         )}
 
         <footer className="app-footer">
-          <span><b>qreporter</b> · SAP quotation analytics</span>
+          <span><b>QReporter</b> · SAP reporting</span>
           <span><i /> Your spreadsheet stays on this device</span>
         </footer>
       </main>

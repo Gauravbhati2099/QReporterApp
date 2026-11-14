@@ -1,7 +1,7 @@
 :root {
   font-family: 'DM Sans', 'Segoe UI', sans-serif;
-  color: #17233c;
-  background: #f5f7fb;
+  color: #1f1b16;
+  background: #f7f4ee;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -9,20 +9,20 @@
   font-optical-sizing: auto;
   font-weight: 400;
 
-  --font-display: 'Manrope', 'DM Sans', sans-serif;
-  --page: #f5f7fb;
-  --surface: #ffffff;
-  --surface-soft: #f8faff;
-  --text: #17233c;
-  --text-strong: #10192d;
-  --muted: #77849b;
-  --border: #e7ebf2;
-  --border-strong: #dce3ed;
-  --blue: #4169e1;
-  --blue-dark: #3156c9;
-  --green: #159777;
-  --purple: #7759cc;
-  --shadow: 0 14px 40px rgba(36, 54, 91, 0.055);
+  --font-display: 'DM Sans', 'Segoe UI', sans-serif;
+  --page: #f7f4ee;
+  --surface: #fdfbf7;
+  --surface-soft: #efe9df;
+  --text: #39342d;
+  --text-strong: #1f1b16;
+  --muted: #716a60;
+  --border: #e7e1d7;
+  --border-strong: #d7d0c4;
+  --blue: #914a2d;
+  --blue-dark: #743a24;
+  --green: #526b55;
+  --purple: #776b5a;
+  --shadow: 0 8px 24px rgba(31, 27, 22, 0.06);
 }
 
 * {
@@ -50,7 +50,7 @@ button:focus-visible,
 input:focus-visible,
 select:focus-visible,
 summary:focus-visible {
-  outline: 3px solid rgba(65, 105, 225, 0.28);
+  outline: 2px solid color-mix(in srgb, var(--blue) 55%, transparent);
   outline-offset: 2px;
 }
 
