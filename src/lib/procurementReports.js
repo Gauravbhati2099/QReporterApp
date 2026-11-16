@@ -263,7 +263,7 @@ const REPORT_SPECS = [
     requiredFields: ['miroValue'],
     anyOfFields: [['miroNumber', 'miroFiDocument', 'invoiceNumber']],
     dateField: 'miroPostingDate',
-    tableFields: ['vendorId', 'vendorName', 'vendorRegion', 'invoiceNumber', 'invoiceDate', 'miroNumber', 'miroFiDocument', 'miroDocumentDate', 'miroPostingDate', 'currency', 'miroValue', 'miroTaxCode', 'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst', 'clearingDate', 'clearingDays'],
+    tableFields: ['vendorId', 'vendorName', 'vendorRegion', 'invoiceNumber', 'invoiceDate', 'miroNumber', 'miroFiDocument', 'miroDocumentDate', 'miroPostingDate', 'currency', 'miroValue', 'miroTaxCode', 'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst', 'clearingDate'],
     filterFields: ['plant', 'vendorId', 'vendorRegion', 'miroNumber', 'miroTaxCode', 'currency', 'paymentTerms'],
     chartDimensions: ['vendorName', 'miroTaxCode', 'currency'],
     metrics: [
@@ -805,7 +805,10 @@ export function getProcurementMeasure(row, metric) {
     return ordered > 0 ? ((Number(row.receivedQuantity) || 0) / ordered) * 100 : 0
   }
   if (metric === 'grnQuantity') return Number(row.grnQuantity) || 0
-  if (metric === 'clearingDays') return Number(row.clearingDays) || 0
+  if (metric === 'clearingDays') {
+    const value = Number(row.clearingDays)
+    return Number.isFinite(value) && value >= 0 ? value : Number.NaN
+  }
   if (metric === 'freight') {
     return Number(row.miroFreight) || Number(row.poFreight) || 0
   }
@@ -855,6 +858,8 @@ function uniqueTransactionRows(rows, transaction, makeKey) {
     } else {
       current.sourceRowCount += 1
       for (const [field, value] of Object.entries(row)) {
+        // Keep document metadata from the first row, but retain source linkage fields
+        // that may only be populated on another row for this same document.
         if ((current[field] == null || current[field] === '') && value !== '') {
           current[field] = value
         }
@@ -898,7 +903,19 @@ function getElapsedDays(startDate, endDate) {
   }
   const start = parse(startDate)
   const end = parse(endDate)
-  return start == null || end == null ? null : Math.round((end - start) / 86_400_000)
+  if (start == null || end == null || end < start) return null
+  return Math.round((end - start) / 86_400_000)
+}
+
+function movementSign(movementType) {
+  const movement = String(movementType ?? '').trim()
+  // Reversal/return movements observed in SAP extracts; movement conventions
+  // can be customized, so unknown types retain their source quantity sign.
+  return ['102', '106', '110', '122', '262', '602', '161'].includes(movement) ? -1 : 1
+}
+
+function getValidClearingDays(row) {
+  return getElapsedDays(row.miroPostingDate, row.clearingDate)
 }
 
 function buildTatEvents(rows, grnItems, miroDocuments, sourceFields) {
@@ -1038,13 +1055,18 @@ export function buildProcurementSummaryTables(rows, availableFields) {
   }
 
   const grnQuantityByPoItem = new Map()
-  for (const row of grnItems) {
+  const distinctSourceMovements = new Map()
+  for (const row of rows) {
+    if (!row.grnNumber || !row.grnItem) continue
+    distinctSourceMovements.set(JSON.stringify(row.sourceValues ?? row), row)
+  }
+  for (const row of distinctSourceMovements.values()) {
     const key = [row.poNumber, row.poItem].join('|')
     if (!key.replace(/\|/g, '').trim()) continue
-    const movement = String(row.movementType ?? '')
-    const sign = ['102', '106', '110', '122', '262', '602'].includes(movement) ? -1 : 1
     const current = grnQuantityByPoItem.get(key) ?? 0
-    grnQuantityByPoItem.set(key, current + sign * (Number(row.grnQuantity) || 0))
+    const quantity = Number(row.grnQuantity) || 0
+    const sign = movementSign(row.movementType)
+    grnQuantityByPoItem.set(key, current + (sign < 0 && quantity > 0 ? -quantity : quantity))
   }
   const pendingGrnItems = poItems.map((row) => {
     const key = [row.poNumber, row.poItem].join('|')
@@ -1055,6 +1077,7 @@ export function buildProcurementSummaryTables(rows, availableFields) {
       orderedQuantity,
       receivedQuantity,
       pendingQuantity: orderedQuantity - receivedQuantity,
+      fulfillmentRate: orderedQuantity > 0 ? (receivedQuantity / orderedQuantity) * 100 : null,
     }
   })
   const pendingByPoItem = new Map(
@@ -1099,7 +1122,7 @@ export function buildProcurementSummaryTables(rows, availableFields) {
   const receiptMetrics = ['grnValue', 'grnQuantity']
   const invoiceMetrics = [
     'miroValue', 'convertedMiroValue', 'miroQuantity', 'miroTotal',
-    'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst', 'clearingDays',
+    'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst',
   ]
   const groupBy = (source, field, metrics) =>
     groupSummary(
@@ -1120,6 +1143,16 @@ export function buildProcurementSummaryTables(rows, availableFields) {
     }))
 
   const invoicesWithInvoiceNumber = invoiceDocuments.filter((row) => row.invoiceNumber)
+  const settlementDocuments = miroDocuments.map((row) => ({
+    ...row,
+    clearingDays: getValidClearingDays(row),
+    isCleared: Boolean(row.clearingDate || row.clearingDocumentNumber),
+    isValidSettlement: getValidClearingDays(row) != null,
+  }))
+  const settlementMetrics = [
+    'miroValue', 'convertedMiroValue', 'miroQuantity', 'miroTotal',
+    'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst', 'clearingDays',
+  ]
   const duplicateInvoices = [...duplicateInvoicesByNumber.values()].filter((row) => row.duplicateCount > 1)
   const duplicateGrnItems = duplicateSourceRows.filter((row) => row.grnNumber && row.grnItem)
   const duplicatePoItemRows = duplicateSourceRows.filter((row) => row.poNumber && row.poItem)
@@ -1229,8 +1262,39 @@ export function buildProcurementSummaryTables(rows, availableFields) {
     } else if (row.pendingQuantity < 0) {
       addException('Excess GRN quantity', row, 'High', 'Linked valid GRN quantity exceeds the PO quantity.')
     }
+    if (row.fulfillmentRate != null && row.fulfillmentRate > 100) {
+      addException('Receipt above ordered quantity', row, 'High', `Net receipt is ${row.fulfillmentRate.toFixed(1)}% of ordered quantity.`)
+    }
   }
   const tatEvents = buildTatEvents(rows, grnItems, miroDocuments, sourceFields)
+
+  const fulfillmentAnalytics = {
+    orderedItemCount: pendingGrnItems.length,
+    fullyReceivedCount: pendingGrnItems.filter((row) => row.pendingQuantity <= 0 && row.orderedQuantity > 0).length,
+    partiallyReceivedCount: pendingGrnItems.filter((row) => row.receivedQuantity > 0 && row.pendingQuantity > 0).length,
+    notReceivedCount: pendingGrnItems.filter((row) => row.receivedQuantity <= 0 && row.orderedQuantity > 0).length,
+    pendingQuantity: pendingGrnItems.reduce((sum, row) => sum + Math.max(0, row.pendingQuantity), 0),
+    excessQuantity: pendingGrnItems.reduce((sum, row) => sum + Math.max(0, -row.pendingQuantity), 0),
+    averageCompletionRate: pendingGrnItems.filter((row) => row.fulfillmentRate != null).length
+      ? pendingGrnItems.filter((row) => row.fulfillmentRate != null)
+        .reduce((sum, row) => sum + row.fulfillmentRate, 0) /
+          pendingGrnItems.filter((row) => row.fulfillmentRate != null).length
+      : null,
+  }
+  const settlementAnalytics = {
+    invoiceCount: settlementDocuments.length,
+    clearedCount: settlementDocuments.filter((row) => row.isCleared).length,
+    openCount: settlementDocuments.filter((row) => !row.isCleared).length,
+    invalidIntervalCount: miroDocuments.filter((row) => {
+      const importedDays = Number(row.clearingDays)
+      return (row.miroPostingDate && row.clearingDate && getElapsedDays(row.miroPostingDate, row.clearingDate) == null) ||
+        (Number.isFinite(importedDays) && importedDays < 0)
+    }).length,
+    averageClearingDays: (() => {
+      const valid = settlementDocuments.map((row) => row.clearingDays).filter((days) => days != null)
+      return valid.length ? valid.reduce((sum, days) => sum + days, 0) / valid.length : null
+    })(),
+  }
 
   return {
     poItems,
@@ -1249,14 +1313,17 @@ export function buildProcurementSummaryTables(rows, availableFields) {
     duplicatePoItemRows,
     purchaseByVendor: groupBy(poItems, 'vendorId', purchaseMetrics),
     vendorPerformance: [...vendorPerformanceGroups.values()],
+    settlementDocuments,
+    fulfillmentAnalytics,
+    settlementAnalytics,
     purchaseByMaterial: groupBy(poItems, 'material', purchaseMetrics),
     purchaseByMaterialGroup: groupBy(poItems, 'materialGroup', purchaseMetrics),
     purchaseByPlant: groupBy(poItems, 'plant', purchaseMetrics),
     grnByVendor: groupBy(grnItems, 'vendorId', receiptMetrics),
     warehouseGrn: groupBy(grnItems, 'warehouse', receiptMetrics),
-    miroByVendor: groupBy(miroDocuments, 'vendorId', invoiceMetrics),
-    gstByVendor,
-    gstByTax,
+    miroByVendor: groupBy(settlementDocuments, 'vendorId', settlementMetrics),
+    gstByVendor: groupBy(miroDocuments, 'vendorId', invoiceMetrics),
+    gstByTax: groupBy(miroDocuments, 'miroTaxCode', invoiceMetrics),
     monthlyPurchase: monthBy(poItems, 'poDate', purchaseMetrics),
     monthlyGrn: monthBy(grnItems, 'grnDate', receiptMetrics),
     monthlyMiro: monthBy(miroDocuments, 'miroPostingDate', invoiceMetrics),

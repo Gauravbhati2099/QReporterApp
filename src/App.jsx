@@ -7,6 +7,7 @@ import {
   Routes,
   useLocation,
   useNavigate,
+  useParams,
 } from 'react-router-dom'
 import {
   formatCount,
@@ -41,6 +42,41 @@ const FILTERS = [
   { key: 'usages', label: 'Usage group', rowKey: 'usage' },
   { key: 'currencies', label: 'Currency', rowKey: 'currency' },
 ]
+
+function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isPresenting, navigate, onTogglePresentation }) {
+  const { reportId } = useParams()
+  const fields = new Set(columns.map((column) => column.field).filter(Boolean))
+  const availableReports = getAvailableProcurementReports(reports, fields)
+  const report = availableReports.find((item) => item.id === reportId)
+
+  if (!report) {
+    const knownReport = reports.find((item) => item.id === reportId)
+    return (
+      <section className="panel procurement-report-unavailable">
+        <div className="eyebrow"><span className="eyebrow-line" /> PROCUREMENT REPORT</div>
+        <h1>{knownReport?.title ?? 'Report unavailable'}</h1>
+        <p>
+          {knownReport
+            ? 'This workbook is missing one or more fields required to build this report. Return to the report library to see which reports are supported.'
+            : 'This report link is invalid or no longer available.'}
+        </p>
+        <button className="button button-primary" onClick={() => navigate('/reports')} type="button">Back to reports</button>
+      </section>
+    )
+  }
+
+  return (
+    <ProcurementReportDashboard
+      columns={columns}
+      fileName={fileName}
+      isPresenting={isPresenting}
+      navigate={navigate}
+      onTogglePresentation={onTogglePresentation}
+      report={report}
+      summaryTables={summaryTables}
+    />
+  )
+}
 
 const PREPROCESSING_STEPS = [
   {
@@ -91,7 +127,7 @@ const REPORT_CARDS = [
   },
   {
     id: 'usage',
-    title: 'Usage analysis',
+    title: 'Quotation Usage Dashboard',
     description: 'Compare manual quotations with configurator-generated quotations.',
     groupBy: 'usage',
     icon: 'check',
@@ -997,9 +1033,9 @@ function AppShell() {
     <div className={`app-shell theme-${theme}${isPresenting ? ' is-presenting' : ''}`}>
       <header className="topbar">
         <div className="topbar-left">
-          <a className="brand" href="#" aria-label="QReport home">
+          <a className="brand" href="#" aria-label="Quotation Usage Dashboard home">
             <span className="brand-mark"><Icon name="chart" size={20} /></span>
-            <span className="brand-name">qreport<span>er</span></span>
+            <span className="brand-name">Quotation Usage Dashboard</span>
           </a>
           {(rows.length > 0 || datasetType === 'procurement') && (
             <nav aria-label="Main pages" className="topbar-nav">
@@ -1228,27 +1264,15 @@ function AppShell() {
               path="/reports/:reportId"
               element={
                 datasetType === 'procurement' ? (
-                  (() => {
-                    const reportId = location.pathname.split('/').pop()
-                    const availableFields = new Set(
-                      rawDataColumns.map((column) => column.field).filter(Boolean),
-                    )
-                    const report = getAvailableProcurementReports(
-                      PROCUREMENT_REPORTS,
-                      availableFields,
-                    ).find((item) => item.id === reportId)
-                    return report ? (
-                      <ProcurementReportDashboard
-                        columns={rawDataColumns}
-                        fileName={fileInfo?.name}
-                        isPresenting={isPresenting}
-                        navigate={navigate}
-                        onTogglePresentation={togglePresentationMode}
-                        report={report}
-                        summaryTables={summaryTables}
-                      />
-                    ) : <Navigate to="/reports" replace />
-                  })()
+                  <ProcurementReportRoute
+                    columns={rawDataColumns}
+                    fileName={fileInfo?.name}
+                    isPresenting={isPresenting}
+                    navigate={navigate}
+                    onTogglePresentation={togglePresentationMode}
+                    reports={PROCUREMENT_REPORTS}
+                    summaryTables={summaryTables}
+                  />
                 ) : <Navigate to="/reports" replace />
               }
             />
@@ -1269,7 +1293,7 @@ function AppShell() {
                 </div>
                 <h1>
                   {groupBy === 'usage'
-                    ? 'Usage analysis'
+                    ? 'Quotation Usage Dashboard'
                     : groupBy === 'currency'
                       ? 'Currency breakdown'
                       : 'Quotation overview'}
@@ -1807,7 +1831,7 @@ function AppShell() {
         )}
 
         <footer className="app-footer">
-          <span><b>QReporter</b> · SAP reporting</span>
+          <span><b>Quotation Usage Dashboard</b> · SAP reporting</span>
           <span><i /> Your spreadsheet stays on this device</span>
         </footer>
       </main>
