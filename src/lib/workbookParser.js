@@ -345,7 +345,7 @@ export async function readQuotationWorkbook(file) {
         row.salesOrganization = String(row.plant ?? '')
         row.document = String(row.poNumber ?? row.prNumber ?? row.grnNumber ?? row.rowNumber)
         row.usage = String(row.materialGroup ?? 'Procurement')
-        row.currency = String(row.currency ?? row.conversionCurrency ?? '')
+        row.currency = String(row.currency || row.conversionCurrency || 'INR')
         row.date = getProcurementRowDate(row)
         row.amount = Number(row.poTotal ?? row.grnValue ?? row.miroValue) || 0
         row.inr = null

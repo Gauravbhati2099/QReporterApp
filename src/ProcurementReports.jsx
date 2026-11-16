@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   getProcurementFieldLabel,
   getProcurementMeasure,
@@ -7,6 +7,8 @@ import {
   PROCUREMENT_REPORTS,
 } from './lib/procurementReports'
 import { formatCount } from './lib/reportData'
+import { exportRowsToExcel } from './lib/reportExport'
+import ReportExportMenu from './ReportExportMenu'
 
 function getAvailableFilters(report, fields) {
   return PROCUREMENT_FILTERS.filter(
@@ -14,10 +16,161 @@ function getAvailableFilters(report, fields) {
   )
 }
 
-function getReportDateField(report, fields) {
+function getFilterOptions(rows, field) {
+  const options = new Map()
+  for (const row of rows) {
+    const value = String(row[field] ?? '').trim()
+    if (!value) continue
+    const option = options.get(value) ?? new Set()
+    const descriptionFields = field === 'vendorId'
+      ? ['vendorName']
+      : ['poNumber', 'prNumber'].includes(field)
+        ? ['materialDescription', 'materialGroupDescription', 'vendorName', 'material']
+        : []
+    for (const descriptionField of descriptionFields) {
+      const description = String(row[descriptionField] ?? '').trim()
+      if (description && description !== value) option.add(description)
+    }
+    options.set(value, option)
+  }
+  return [...options.entries()]
+    .sort(([left], [right]) => left.localeCompare(right, undefined, { numeric: true }))
+    .map(([value, descriptions]) => {
+      const context = [...descriptions].slice(0, 3).join(' · ')
+      return {
+        value,
+        label: context ? `${value} — ${context}` : value,
+      }
+    })
+}
+
+function SearchableMultiSelect({ label, options, selected, onChange }) {
+  const menuRef = useRef(null)
+  const [query, setQuery] = useState('')
+  const selectedValues = selected ?? []
+  const optionValues = options.map((option) => option.value)
+  const summary = selected === undefined || (options.length > 0 && optionValues.every((value) => selectedValues.includes(value)))
+    ? 'All'
+    : selectedValues.length
+      ? `${selectedValues.length} selected`
+      : 'None'
+  const visibleOptions = options.filter((option) =>
+    `${option.value} ${option.label}`.toLowerCase().includes(query.trim().toLowerCase()),
+  )
+
+  useEffect(() => {
+    function closeOnOutsidePointer(event) {
+      if (!menuRef.current?.contains(event.target)) menuRef.current.open = false
+    }
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [])
+
+  function toggle(value) {
+    const current = selected === undefined ? optionValues : selectedValues
+    onChange(
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value],
+    )
+  }
+
+  return (
+    <details className="filter-menu procurement-filter-menu" ref={menuRef}>
+      <summary>
+        <span>{label}</span>
+        <span className="filter-summary">{summary}</span>
+        <span aria-hidden="true" className="chevron" />
+      </summary>
+      <div className="filter-popover procurement-filter-popover">
+        <div className="filter-popover-head">
+          <strong>{label}</strong>
+          <div className="filter-actions">
+            <button onClick={() => onChange(optionValues)} type="button">Select all</button>
+            <button onClick={() => onChange([])} type="button">Clear</button>
+          </div>
+        </div>
+        <input
+          aria-label={`Search ${label}`}
+          className="procurement-filter-search"
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={`Search ${label.toLowerCase()}`}
+          type="search"
+          value={query}
+        />
+        <div className="filter-options">
+          {visibleOptions.map((option) => (
+            <label className="check-option" key={option.value}>
+              <input
+                checked={selected === undefined || selectedValues.includes(option.value)}
+                onChange={() => toggle(option.value)}
+                type="checkbox"
+                value={option.value}
+              />
+              <span>{option.label}</span>
+              <span aria-hidden="true" className="check-mark">✓</span>
+            </label>
+          ))}
+          {visibleOptions.length === 0 && <span className="empty-options">No matching values</span>}
+        </div>
+      </div>
+    </details>
+  )
+}
+
+function getReportDateField(report, fields, rows) {
   if (report.dateField === false) return ''
-  if (fields.has(report.dateField)) return report.dateField
-  return ['miroPostingDate', 'grnDate', 'poDate', 'prDate'].find((field) => fields.has(field)) ?? ''
+  const candidates = [...new Set([
+    report.dateField,
+    'miroPostingDate', 'miroDocumentDate', 'invoiceDate', 'grnDate', 'poDate',
+    'prDate', 'vendorFinalizationDate', 'certificateDate', 'clearingDate', 'dueDate', 'date',
+  ])].filter((field) => fields.has(field))
+  return candidates.find((field) =>
+    rows.some((row) => /^\d{4}-\d{2}(?:-\d{2})?$/.test(String(row[field] ?? ''))),
+  ) ?? candidates[0] ?? ''
+}
+
+function getDateInputValue(value, boundary) {
+  if (!/^\d{4}-\d{2}$/.test(value)) return value
+  const [year, month] = value.split('-').map(Number)
+  const day = boundary === 'end' ? new Date(year, month, 0).getDate() : 1
+  return `${value}-${String(day).padStart(2, '0')}`
+}
+
+function matchesReportFilters(row, filterOptions, filters, dateField, dateFrom, dateTo, tatStageFilter) {
+  if (!filterOptions.every(([field]) =>
+    filters[field] === undefined || filters[field].includes(String(row[field] ?? '')),
+  )) {
+    return false
+  }
+  if (tatStageFilter && row.tatStage !== tatStageFilter) return false
+  if (!dateField) return true
+
+  const date = String(row[dateField] ?? '')
+  const month = /^\d{4}-\d{2}$/.test(date)
+  const from = month ? dateFrom.slice(0, 7) : dateFrom
+  const to = month ? dateTo.slice(0, 7) : dateTo
+  return (!from || date >= from) && (!to || date <= to)
+}
+
+function countDistinctValues(rows, fields) {
+  const values = rows.map((row) =>
+    fields.map((field) => String(row[field] ?? '').trim()).find(Boolean) ?? '',
+  )
+  return new Set(values.filter(Boolean)).size
+}
+
+function countGrnDocuments(rows) {
+  const documents = new Set()
+  for (const row of rows) {
+    const values = String(row.grnNumbers ?? row.grnNumber ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    for (const value of values) documents.add(value)
+  }
+  return documents.size
 }
 
 function getReportDisplayColumns(report, columns) {
@@ -103,7 +256,7 @@ function getCurrencyTotals(rows, metric, fields) {
   if (metric.kind !== 'currency') return [['', getMetricTotal(rows, metric, fields)]]
   const totals = new Map()
   for (const row of rows) {
-    const currency = row.currency || row.conversionCurrency || 'Unspecified currency'
+    const currency = row.currency || row.conversionCurrency || 'INR'
     totals.set(currency, (totals.get(currency) ?? 0) + getMetricValue(row, metric))
   }
   return [...totals.entries()]
@@ -112,7 +265,7 @@ function getCurrencyTotals(rows, metric, fields) {
 function formatMetric(value, metric, currency = '') {
   if (value == null || !Number.isFinite(value)) return '—'
   if (metric.kind === 'currency') {
-    return `${currency && currency !== 'Unspecified currency' ? `${currency} ` : ''}${value.toLocaleString('en-IN', {
+    return `${currency ? `${currency} ` : ''}${value.toLocaleString('en-IN', {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`
@@ -162,7 +315,7 @@ function getMetricGroups(rows, metric, dimension) {
     if (!Number.isFinite(value) || metric.kind === 'average' && value < 0) continue
     const label = String(row[dimension] ?? 'Unspecified')
     const currency = metric.kind === 'currency'
-      ? row.currency || row.conversionCurrency || 'Unspecified currency'
+      ? row.currency || row.conversionCurrency || 'INR'
       : ''
     const key = `${label}|${currency}`
     const current = groups.get(key) ?? {
@@ -396,7 +549,7 @@ const TAT_STAGE_ORDER = [
 function groupByCurrency(entries) {
   const groups = new Map()
   for (const entry of entries) {
-    const currency = entry.currency || 'Unspecified currency'
+    const currency = entry.currency || 'INR'
     const items = groups.get(currency) ?? []
     items.push(entry)
     groups.set(currency, items)
@@ -441,6 +594,110 @@ function ProcurementBarChart({ title, subtitle, entries, metric }) {
       {metric.kind === 'currency' && (
         <div className="chart-footnote">Each currency has its own scale; values are not converted or compared across currencies.</div>
       )}
+    </section>
+  )
+}
+
+const PROCUREMENT_PIE_COLORS = ['#4169e1', '#159777', '#7759cc', '#df8b36', '#d65773', '#398da8', '#78869c']
+
+function getProcurementPieSlices(entries) {
+  const total = entries.reduce((sum, entry) => sum + Math.abs(entry.value), 0)
+  let angle = -90
+
+  return entries
+    .filter((entry) => Number.isFinite(entry.value) && Math.abs(entry.value) > 0)
+    .map((entry, index, availableEntries) => {
+      const value = Math.abs(entry.value)
+      const share = total ? value / total : 0
+      const nextAngle = angle + share * 360
+      const start = {
+        x: 110 + 94 * Math.cos((angle * Math.PI) / 180),
+        y: 110 + 94 * Math.sin((angle * Math.PI) / 180),
+      }
+      const end = {
+        x: 110 + 94 * Math.cos((nextAngle * Math.PI) / 180),
+        y: 110 + 94 * Math.sin((nextAngle * Math.PI) / 180),
+      }
+      const path = availableEntries.length === 1
+        ? 'M 110 16 A 94 94 0 1 1 110 204 A 94 94 0 1 1 110 16 Z'
+        : `M 110 110 L ${start.x} ${start.y} A 94 94 0 ${share > 0.5 ? 1 : 0} 1 ${end.x} ${end.y} Z`
+
+      angle = nextAngle
+      return { ...entry, path, share, value }
+    })
+}
+
+function ProcurementPieChart({ entries, metric, dimension }) {
+  const series = metric.kind === 'currency'
+    ? groupByCurrency(entries)
+    : [['', entries]]
+
+  return (
+    <section className={`panel chart-panel pie-panel procurement-pie-panel pie-panel-${metric.kind}`}>
+      <div className="panel-heading">
+        <div>
+          <h2>Distribution by {getProcurementFieldLabel(dimension)}</h2>
+          <p>Share of the selected measure for each group</p>
+        </div>
+      </div>
+      {series.map(([currency, currencyEntries]) => {
+        const slices = getProcurementPieSlices(currencyEntries)
+        const total = slices.reduce((sum, slice) => sum + slice.value, 0)
+        return (
+          <div className="procurement-pie-series" key={currency || 'all'}>
+            {currency && <h3>{currency}</h3>}
+            <div className="chart-total pie-total">
+              <span>{formatMetric(total, metric, currency)}</span>
+              <small>Total {metric.label.toLowerCase()}</small>
+            </div>
+            {slices.length ? (
+              <div className="pie-content">
+                <svg
+                  aria-label={`Pie chart of ${metric.label.toLowerCase()} share by ${getProcurementFieldLabel(dimension)}`}
+                  className="pie-visual"
+                  role="img"
+                  viewBox="0 0 220 220"
+                >
+                  {slices.map((slice, index) => (
+                    <path
+                      aria-label={`${slice.label}: ${formatMetric(slice.value, metric, currency)}, ${(slice.share * 100).toFixed(1)}%`}
+                      className="pie-slice"
+                      d={slice.path}
+                      key={slice.label}
+                      style={{ '--pie-color': PROCUREMENT_PIE_COLORS[index % PROCUREMENT_PIE_COLORS.length] }}
+                    >
+                      <title>{`${slice.label}: ${(slice.share * 100).toFixed(1)}%`}</title>
+                    </path>
+                  ))}
+                </svg>
+                <div
+                  aria-label={`Legend by ${getProcurementFieldLabel(dimension)}`}
+                  className="pie-legend"
+                  role="list"
+                >
+                  {slices.map((slice, index) => (
+                    <div className="pie-legend-item" key={slice.label} role="listitem">
+                      <i
+                        aria-hidden="true"
+                        className="pie-legend-dot"
+                        style={{ '--pie-color': PROCUREMENT_PIE_COLORS[index % PROCUREMENT_PIE_COLORS.length] }}
+                      />
+                      <span className="pie-legend-label" title={slice.label}>{slice.label}</span>
+                      <span className="pie-legend-value">
+                        {formatMetric(slice.value, metric, currency)}
+                        <small>{(slice.share * 100).toFixed(1)}%</small>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="chart-empty">No positive values to display.</div>
+            )}
+          </div>
+        )
+      })}
+      {!entries.length && <div className="chart-empty">No data for this selection.</div>}
     </section>
   )
 }
@@ -502,7 +759,7 @@ function ProcurementTatStageFlow({ rows }) {
   )
 }
 
-export function ProcurementReportDashboard({ report, summaryTables, columns, navigate, fileName, isPresenting, onTogglePresentation }) {
+export function ProcurementReportDashboard({ report, summaryTables, columns, navigate, fileName, isPresenting, onPreviewPrint, onTogglePresentation }) {
   const rows = useMemo(
     () => summaryTables?.[report.summaryTable] ?? [],
     [report.summaryTable, summaryTables],
@@ -511,12 +768,28 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
     () => new Set(columns.map((column) => column.field).filter(Boolean)),
     [columns],
   )
-  const dateField = report.id === 'tat-analysis' ? 'startDate' : getReportDateField(report, fieldSet)
-  const filterOptions = useMemo(() => getAvailableFilters(report, fieldSet), [fieldSet, report])
+  const dateField = report.id === 'tat-analysis' ? 'startDate' : getReportDateField(report, fieldSet, rows)
+  const filterOptions = useMemo(
+    () => getAvailableFilters(report, fieldSet).filter(([field]) => !(report.id === 'procurement-overview' && field === 'currency')),
+    [fieldSet, report],
+  )
+  const filterChoices = useMemo(
+    () => new Map(filterOptions.map(([field]) => [field, getFilterOptions(rows, field)])),
+    [filterOptions, rows],
+  )
+  const dateBounds = useMemo(() => {
+    const dates = rows
+      .map((row) => String(row[dateField] ?? ''))
+      .filter((value) => /^\d{4}-\d{2}(?:-\d{2})?$/.test(value))
+      .sort()
+    return { min: dates[0] ?? '', max: dates.at(-1) ?? '' }
+  }, [dateField, rows])
   const [filters, setFilters] = useState({})
   const [tatStageFilter, setTatStageFilter] = useState('')
-  const [dateFrom, setDateFrom] = useState('')
-  const [dateTo, setDateTo] = useState('')
+  const [dateFrom, setDateFrom] = useState(null)
+  const [dateTo, setDateTo] = useState(null)
+  const selectedDateFrom = dateFrom ?? dateBounds.min
+  const selectedDateTo = dateTo ?? dateBounds.max
   const [search, setSearch] = useState('')
   const [tableFilters, setTableFilters] = useState({})
   const [sort, setSort] = useState({ field: '', direction: 'asc' })
@@ -557,23 +830,32 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
       .sort((left, right) => TAT_STAGE_ORDER.indexOf(left) - TAT_STAGE_ORDER.indexOf(right))
     : []
   const filteredSourceRows = useMemo(() => {
-    let filtered = rows.filter((row) =>
-      filterOptions.every(([field]) => !filters[field] || String(row[field] ?? '') === filters[field]),
+    return rows.filter((row) =>
+      matchesReportFilters(
+        row,
+        filterOptions,
+        filters,
+        dateField,
+        selectedDateFrom,
+        selectedDateTo,
+        tatStageFilter,
+      ),
     )
-    if (tatStageFilter) {
-      filtered = filtered.filter((row) => row.tatStage === tatStageFilter)
-    }
-    if (dateField) {
-      filtered = filtered.filter((row) => {
-        const date = String(row[dateField] ?? '')
-        const month = /^\d{4}-\d{2}$/.test(date)
-        const from = month ? dateFrom.slice(0, 7) : dateFrom
-        const to = month ? dateTo.slice(0, 7) : dateTo
-        return (!from || date >= from) && (!to || date <= to)
-      })
-    }
-    return filtered
-  }, [dateField, dateFrom, dateTo, filterOptions, filters, rows, tatStageFilter])
+  }, [dateField, filterOptions, filters, rows, selectedDateFrom, selectedDateTo, tatStageFilter])
+  const filteredPoGrnRows = useMemo(
+    () => (summaryTables?.poGrnMiro ?? []).filter((row) =>
+      matchesReportFilters(
+        row,
+        filterOptions,
+        filters,
+        dateField,
+        selectedDateFrom,
+        selectedDateTo,
+        tatStageFilter,
+      ),
+    ),
+    [dateField, filterOptions, filters, selectedDateFrom, selectedDateTo, summaryTables, tatStageFilter],
+  )
   const sourceRows = filteredSourceRows
   const displayColumns = useMemo(
     () => getReportDisplayColumns(report, columns),
@@ -614,6 +896,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
   }, [page, visiblePage])
   const metricKpis = report.metrics
     .filter((metric) => isMetricAvailable(metric, metricFields))
+    .filter((metric) => !(report.id === 'procurement-overview' && metric.key === 'poTotal'))
     .flatMap((metric) => {
       if (metric.kind === 'currency') {
         return getCurrencyTotals(metricRows, metric, metricFields).map(([currency, value]) => ({
@@ -632,6 +915,52 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
         currency: '',
       }]
     })
+  const overviewKpis = report.id === 'procurement-overview'
+    ? [
+      { key: 'po-count', label: 'Purchase orders', value: countDistinctValues(metricRows, ['poNumber']), description: 'Distinct PO numbers in the selected date range.' },
+      ...(fieldSet.has('prNumber')
+        ? [{ key: 'pr-count', label: 'Purchase requisitions', value: countDistinctValues(metricRows, ['prNumber']), description: 'Distinct PR numbers in the selected date range.' }]
+        : []),
+      { key: 'vendor-count', label: 'Vendors', value: countDistinctValues(metricRows, ['vendorId', 'vendorName']), description: 'Distinct vendors in the selected date range.' },
+      ...(fieldSet.has('materialGroup') || fieldSet.has('material')
+        ? [{
+          key: 'material-count',
+          label: 'Material types',
+          value: countDistinctValues(metricRows, [fieldSet.has('materialGroup') ? 'materialGroup' : 'material']),
+          description: fieldSet.has('materialGroup') ? 'Distinct material groups in the selected date range.' : 'Distinct materials in the selected date range.',
+        }]
+        : []),
+      ...(fieldSet.has('grnNumber')
+        ? [{ key: 'grn-count', label: 'GRN documents', value: countGrnDocuments(filteredPoGrnRows), description: 'Distinct GRN documents linked to matching purchase orders.' }]
+        : []),
+    ].map((kpi) => ({
+      ...kpi,
+      metric: { kind: 'count' },
+      currency: '',
+    }))
+    : null
+  const displayedKpis = overviewKpis ?? metricKpis.filter((kpi) => !(
+    report.id === 'procurement-overview' && kpi.metric.key === 'poTotal'
+  ))
+  const printDateRange = !dateField || (!selectedDateFrom && !selectedDateTo)
+    ? 'All available dates'
+    : selectedDateFrom && selectedDateTo
+      ? `${formatReportDate(selectedDateFrom)} — ${formatReportDate(selectedDateTo)}`
+      : selectedDateFrom
+        ? `From ${formatReportDate(selectedDateFrom)}`
+        : `Through ${formatReportDate(selectedDateTo)}`
+  const printActiveFilters = filterOptions.flatMap(([field, label]) => {
+    const selected = filters[field]
+    if (selected === undefined) return []
+    const availableValues = [...new Set(rows.map((row) => String(row[field] ?? '')).filter(Boolean))]
+    if (selected.length === availableValues.length && availableValues.every((value) => selected.includes(value))) return []
+    return [`${label}: ${selected.length ? selected.join(', ') : 'None'}`]
+  })
+  const printFilterSummary = [
+    `Date${dateField ? ` (${getProcurementFieldLabel(dateField)})` : ''}: ${printDateRange}`,
+    ...(report.id === 'tat-analysis' && tatStageFilter ? [`Stage: ${tatStageFilter}`] : []),
+    ...printActiveFilters,
+  ]
   const chartData = getMetricGroups(metricRows, activeMetric, activeDimension)
   const insights = getReportInsights(report, metricRows, fieldSet)
   const fulfillment = report.id === 'order-fulfillment'
@@ -673,6 +1002,8 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
     setPage(0)
     setSearch('')
     setTableFilters({})
+    setDateFrom(null)
+    setDateTo(null)
     setSort({ field: '', direction: 'asc' })
   }, [report.id, report.dimension, report.metric])
 
@@ -684,94 +1015,68 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
     }))
   }
 
+  async function exportExcel() {
+    const exportColumns = displayColumns.map((column) => [
+      column.label,
+      (row) => formatTableValue(
+        row[column.field] ?? row.sourceValues?.[column.sourceIndex],
+        column.field,
+      ),
+    ])
+    await exportRowsToExcel(orderedRows, exportColumns, report.id)
+  }
+
   return (
     <section className="procurement-report-detail">
-      <div className="procurement-detail-back">
-        <button className="button button-outline" onClick={() => navigate('/reports')} type="button">
-          ← Back to reports
-        </button>
-        <button
-          aria-pressed={isPresenting}
-          className={`button ${isPresenting ? 'button-outline' : 'button-primary'} presentation-button`}
-          onClick={() => void onTogglePresentation()}
-          type="button"
-        >
-          {isPresenting ? 'Exit presentation' : 'Present'}
-        </button>
-        <button className="button button-outline" onClick={() => window.print()} type="button">
-          Print report
-        </button>
-        <button
-          className="button button-primary"
-          disabled={!displayColumns.length}
-          onClick={() => exportRows(orderedRows, displayColumns, report)}
-          type="button"
-        >
-          Export Excel-compatible CSV
-        </button>
-      </div>
-      <header className="procurement-report-header">
-        <div>
-          <div className="eyebrow"><span className="eyebrow-line" /> {report.category}</div>
-          <p className="procurement-report-number">Report {report.number} · {report.tags.join(' · ')}</p>
+      <header className="page-heading procurement-report-header">
+        <div className="procurement-report-title">
+          <div className="eyebrow">
+            <span className="eyebrow-line" />
+            {report.category} · REPORT {report.number}
+          </div>
           <h1>{report.title}</h1>
-          <p>{report.description}</p>
+          <p className="page-subtitle">
+            {report.description}
+            <span className="source-name">
+              Source: {fileName || 'Procurement data'} · Refreshed {new Date().toLocaleDateString('en-IN')}
+            </span>
+          </p>
+          <div className="print-filter-summary">
+            <strong>Applied filters:</strong>
+            {printFilterSummary.map((filter) => <span key={filter}>{filter}</span>)}
+          </div>
         </div>
-        <div className="report-selection-summary">
-          <span>Source workbook</span>
-          <strong>{fileName || 'Procurement data'}</strong>
-          <small>Refreshed {new Date().toLocaleDateString('en-IN')}</small>
+        <div className="heading-actions procurement-detail-back">
+          <button className="button button-outline" onClick={() => navigate('/reports')} type="button">
+            ← Back to reports
+          </button>
+          <button
+            aria-pressed={isPresenting}
+            className={`button ${isPresenting ? 'button-outline' : 'button-primary'} presentation-button`}
+            onClick={() => void onTogglePresentation()}
+            type="button"
+          >
+            {isPresenting ? 'Exit presentation' : 'Present'}
+          </button>
+          <ReportExportMenu
+            onExportCsv={() => exportRows(orderedRows, displayColumns, report)}
+            onExportExcel={exportExcel}
+            onPreview={onPreviewPrint}
+          />
         </div>
       </header>
 
-      <section aria-label="Report KPIs" className="procurement-kpi-grid">
-        {metricKpis.filter((kpi) => !(
-          report.id === 'order-fulfillment' &&
-          ['poQuantity', 'receivedQuantity', 'pendingQuantity'].includes(kpi.metric.key)
-        )).map((kpi) => (
-          <article className="panel procurement-kpi" key={kpi.key}>
-            <span>{kpi.label}{kpi.currency ? ` · ${kpi.currency}` : ''}</span>
-            <strong>{formatMetric(kpi.value, kpi.metric, kpi.currency)}</strong>
-            <small>
-              {report.id === 'tat-analysis' && kpi.metric.key === 'recordCount'
-                ? 'Unique linked stage intervals with both dates; a document can count in multiple stages.'
-                : report.id === 'tat-analysis' && kpi.metric.key === 'tatDays'
-                  ? 'Elapsed calendar days across completed intervals; negative intervals are excluded.'
-                : kpi.metric.kind === 'currency'
-                  ? 'Source currency; not converted'
-                  : 'Based on filtered summary rows'}
-            </small>
-          </article>
-        ))}
-      </section>
-
-      <section aria-label="Report filters" className="panel procurement-filter-panel">
-        <div className="procurement-section-heading">
+      <section aria-label="Report filters" className="panel filter-panel procurement-filter-panel">
+        <div className="filter-panel-title">
+          <div className="filter-title-mark"><span /><span /><span /></div>
           <div>
             <h2>Filters</h2>
-            <p>
-              {report.id === 'tat-analysis'
-                ? 'Select a stage to focus the KPIs, chart, table, and insights.'
-                : 'Only fields available in this workbook are shown.'}
-            </p>
+            <p>{report.id === 'tat-analysis' ? 'Refine the stage report' : 'Refine this report'}</p>
           </div>
-          <button
-            className="button button-outline"
-            onClick={() => {
-              setFilters({})
-              setTatStageFilter('')
-              setDateFrom('')
-              setDateTo('')
-              setPage(0)
-            }}
-            type="button"
-          >
-            Clear filters
-          </button>
         </div>
-        <div className="procurement-filter-grid">
+        <div className="filter-controls procurement-filter-grid">
           {report.id === 'tat-analysis' && (
-            <label>
+            <label className="date-filter procurement-stage-filter">
               <span>TAT stage</span>
               <select
                 onChange={(event) => {
@@ -786,31 +1091,73 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
             </label>
           )}
           {filterOptions.map(([field, label]) => {
-            const values = [...new Set(rows.map((row) => String(row[field] ?? '')).filter(Boolean))]
-              .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+            const values = filterChoices.get(field) ?? []
             return (
-              <label key={field}>
-                <span>{label}</span>
-                <select
-                  onChange={(event) => {
-                    setFilters((current) => ({ ...current, [field]: event.target.value }))
-                    setPage(0)
-                  }}
-                  value={filters[field] ?? ''}
-                >
-                  <option value="">All</option>
-                  {values.map((value) => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
+              <SearchableMultiSelect
+                key={field}
+                label={label}
+                onChange={(selected) => {
+                  setFilters((current) => ({ ...current, [field]: selected }))
+                  setPage(0)
+                }}
+                options={values}
+                selected={filters[field]}
+              />
             )
           })}
           {dateField && (
             <>
-              <label><span>From date</span><input onChange={(event) => { setDateFrom(event.target.value); setPage(0) }} type="date" value={dateFrom} /></label>
-              <label><span>To date</span><input onChange={(event) => { setDateTo(event.target.value); setPage(0) }} type="date" value={dateTo} /></label>
+              <label className="date-filter">
+                <span>From</span>
+                <span className="date-input">
+                  <input onChange={(event) => { setDateFrom(event.target.value); setPage(0) }} type="date" value={getDateInputValue(selectedDateFrom, 'start')} />
+                </span>
+              </label>
+              <label className="date-filter">
+                <span>To</span>
+                <span className="date-input">
+                  <input onChange={(event) => { setDateTo(event.target.value); setPage(0) }} type="date" value={getDateInputValue(selectedDateTo, 'end')} />
+                </span>
+              </label>
             </>
           )}
+          <button
+            className="reset-button"
+            onClick={() => {
+              setFilters({})
+              setTatStageFilter('')
+              setDateFrom(null)
+              setDateTo(null)
+              setSearch('')
+              setTableFilters({})
+              setPage(0)
+            }}
+            type="button"
+          >
+            Clear filters
+          </button>
         </div>
+      </section>
+
+      <section aria-label="Report KPIs" className="kpi-grid procurement-kpi-grid">
+        {displayedKpis.filter((kpi) => !(
+          report.id === 'order-fulfillment' &&
+          ['poQuantity', 'receivedQuantity', 'pendingQuantity'].includes(kpi.metric.key)
+        )).map((kpi) => (
+          <article className="panel kpi-card procurement-kpi" key={kpi.key}>
+            <span>{kpi.label}{kpi.currency ? ` · ${kpi.currency}` : ''}</span>
+            <strong>{formatMetric(kpi.value, kpi.metric, kpi.currency)}</strong>
+            <small>
+              {report.id === 'tat-analysis' && kpi.metric.key === 'recordCount'
+                ? 'Unique linked stage intervals with both dates; a document can count in multiple stages.'
+                : report.id === 'tat-analysis' && kpi.metric.key === 'tatDays'
+                  ? 'Elapsed calendar days across completed intervals; negative intervals are excluded.'
+                : kpi.metric.kind === 'currency'
+                  ? 'Source currency; not converted'
+                  : kpi.description ?? 'Based on filtered summary rows'}
+            </small>
+          </article>
+        ))}
       </section>
 
       <section aria-label="Visual analysis" className="charts-section">
@@ -850,12 +1197,17 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
             )}
           </div>
         </div>
-        <div className={`chart-grid procurement-chart-grid${report.id === 'tat-analysis' ? ' is-tat' : ''}`}>
+        <div className={`chart-grid procurement-chart-grid has-pie${report.id === 'tat-analysis' ? ' is-tat' : ''}`}>
           <ProcurementBarChart
             entries={chartData}
             metric={activeMetric}
             subtitle={`Ranked by ${getProcurementFieldLabel(activeDimension)}`}
             title={`${activeMetric.label} by ${getProcurementFieldLabel(activeDimension).toLowerCase()}`}
+          />
+          <ProcurementPieChart
+            dimension={activeDimension}
+            entries={chartData}
+            metric={activeMetric}
           />
           {report.id === 'tat-analysis' && <ProcurementTatStageFlow rows={metricRows} />}
         </div>

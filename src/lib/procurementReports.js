@@ -177,7 +177,7 @@ const REPORT_SPECS = [
     id: 'procurement-overview',
     number: '01',
     title: 'Procurement Overview',
-    description: 'Purchase value, quantity, vendor mix, and material or plant distribution.',
+    description: 'Track PO, PR, and GRN volume, vendor reach, and material mix.',
     categoryId: 'spend-overview',
     category: 'Spend overview',
     tag: 'PO',
@@ -189,12 +189,11 @@ const REPORT_SPECS = [
     anyOfFields: [['vendorId', 'vendorName']],
     dateField: 'poDate',
     tableFields: ['poNumber', 'poItem', 'plant', 'vendorId', 'vendorName', 'material', 'materialDescription', 'materialGroup', 'poDate', 'poQuantity', 'poTotal', 'currency'],
-    filterFields: ['plant', 'vendorId', 'vendorRegion', 'material', 'materialGroup', 'poNumber', 'documentType', 'currency'],
+    filterFields: ['plant', 'vendorId', 'vendorRegion', 'material', 'materialGroup', 'poNumber', 'prNumber', 'documentType', 'currency'],
     chartDimensions: ['vendorName', 'plant', 'materialGroup', 'material'],
     metrics: [
       { key: 'poTotal', label: 'PO value', kind: 'currency', fields: ['poTotal'] },
       { key: 'recordCount', label: 'PO items', kind: 'count', fields: [] },
-      { key: 'poQuantity', label: 'Ordered quantity', kind: 'number', fields: ['poQuantity'] },
       { key: 'vendorCount', label: 'Vendors', kind: 'distinct', fields: ['vendorId', 'vendorName'] },
     ],
   },
@@ -239,7 +238,7 @@ const REPORT_SPECS = [
     anyOfFields: [],
     dateField: 'poDate',
     tableFields: ['poNumber', 'poItem', 'plant', 'vendorId', 'vendorName', 'material', 'materialGroup', 'poDate', 'poQuantity', 'orderedQuantity', 'receivedQuantity', 'pendingQuantity', 'grnNumbers', 'grnCount'],
-    filterFields: ['plant', 'vendorId', 'material', 'materialGroup', 'poNumber'],
+    filterFields: ['plant', 'vendorId', 'material', 'materialGroup', 'poNumber', 'prNumber'],
     chartDimensions: ['vendorName', 'plant', 'materialGroup', 'material'],
     metrics: [
       { key: 'poQuantity', label: 'Ordered quantity', kind: 'number', fields: ['poQuantity'] },
@@ -264,7 +263,7 @@ const REPORT_SPECS = [
     anyOfFields: [['miroNumber', 'miroFiDocument', 'invoiceNumber']],
     dateField: 'miroPostingDate',
     tableFields: ['vendorId', 'vendorName', 'vendorRegion', 'invoiceNumber', 'invoiceDate', 'miroNumber', 'miroFiDocument', 'miroDocumentDate', 'miroPostingDate', 'currency', 'miroValue', 'miroTaxCode', 'miroCgst', 'miroSgst', 'miroUgst', 'miroIgst', 'clearingDate'],
-    filterFields: ['plant', 'vendorId', 'vendorRegion', 'miroNumber', 'miroTaxCode', 'currency', 'paymentTerms'],
+    filterFields: ['plant', 'vendorId', 'vendorRegion', 'poNumber', 'prNumber', 'miroNumber', 'miroTaxCode', 'currency', 'paymentTerms'],
     chartDimensions: ['vendorName', 'miroTaxCode', 'currency'],
     metrics: [
       { key: 'miroValue', label: 'MIRO value', kind: 'currency', fields: ['miroValue'] },
@@ -289,7 +288,7 @@ const REPORT_SPECS = [
     anyOfFields: [],
     dateField: 'poDate',
     tableFields: ['exceptionType', 'severity', 'issueDetails', 'vendorId', 'vendorName', 'poNumber', 'poItem', 'grnNumber', 'grnItem', 'miroNumber', 'invoiceNumber', 'currency'],
-    filterFields: ['plant', 'vendorId', 'material', 'poNumber', 'grnNumber', 'miroNumber', 'currency'],
+    filterFields: ['plant', 'vendorId', 'material', 'poNumber', 'prNumber', 'grnNumber', 'miroNumber', 'currency'],
     chartDimensions: ['exceptionType', 'severity'],
     metrics: [
       { key: 'recordCount', label: 'Exception records', kind: 'count', fields: [] },
@@ -319,7 +318,7 @@ const REPORT_SPECS = [
       ['miroPostingDate', 'clearingDate'],
     ],
     dateField: 'poDate',
-    filterFields: ['plant', 'vendorId', 'vendorRegion'],
+    filterFields: ['plant', 'vendorId', 'vendorRegion', 'poNumber', 'prNumber'],
     chartDimensions: ['tatStage', 'vendorName'],
     tableFields: ['tatStage', 'startDate', 'endDate', 'tatDays', 'vendorId', 'vendorName', 'plant', 'prNumber', 'poNumber', 'poItem', 'vendorFinalizationDate', 'grnNumber', 'grnItem', 'grnDate', 'miroNumber', 'miroFiDocument', 'miroPostingDate', 'clearingDate'],
     metrics: [
@@ -349,7 +348,8 @@ const FIELD_ALIASES = {
   materialSubGroup: ['materialsubgroup'],
   materialSubGroupDescription: ['materialsubgroupd'],
   prNumber: ['prno'],
-  prDate: ['prdate'],
+  prDate: ['prdate', 'requestdate', 'requisitiondate'],
+  date: ['date', 'documentdate', 'podocumentdate'],
   prItem: ['pritem'],
   prQuantity: ['prqty'],
   prSalesOrder: ['prsalesorderno'],
@@ -369,7 +369,7 @@ const FIELD_ALIASES = {
   documentType: ['doctype'],
   profitCenter: ['profitcenter'],
   paymentTerms: ['paymentterms'],
-  poDate: ['podate'],
+  poDate: ['podate', 'purchaseorderdate'],
   poQuantity: ['poquantity'],
   poSalesOrder: ['posalesorder'],
   unitOfMeasure: ['pouom'],
@@ -452,6 +452,7 @@ const FIELD_ALIASES = {
 
 const DATE_FIELDS = new Set([
   'certificateDate',
+  'date',
   'prDate',
   'vendorFinalizationDate',
   'poDate',
@@ -460,6 +461,7 @@ const DATE_FIELDS = new Set([
   'miroDocumentDate',
   'miroPostingDate',
   'clearingDate',
+  'dueDate',
 ])
 
 const NUMBER_FIELDS = new Set(
@@ -481,6 +483,7 @@ const NUMBER_FIELDS = new Set(
 
 const FIELD_LABELS = {
   plant: 'Plant',
+  date: 'Date',
   vendorId: 'Vendor',
   vendorName: 'Vendor name',
   vendorRegion: 'Vendor region',
@@ -539,6 +542,7 @@ export const PROCUREMENT_FILTERS = [
   ['material', 'Material'],
   ['materialGroup', 'Material group'],
   ['poNumber', 'PO number'],
+  ['prNumber', 'PR number'],
   ['grnNumber', 'GRN number'],
   ['miroNumber', 'MIRO number'],
   ['documentType', 'Document type'],
@@ -728,7 +732,8 @@ export const PROCUREMENT_TAGS = [
 ]
 
 export function getProcurementField(header) {
-  return ALIAS_LOOKUP.get(normalizeHeader(header)) ?? null
+  const normalized = normalizeHeader(header)
+  return ALIAS_LOOKUP.get(normalized) ?? (/date|dt$/.test(normalized) ? 'date' : null)
 }
 
 export function getProcurementFieldLabel(field) {
@@ -756,6 +761,14 @@ export function normalizeProcurementCell(field, value, date1904 = false) {
       return date.toISOString().slice(0, 10)
     }
     const text = String(value).trim()
+    const isoDate = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/)
+    if (isoDate) {
+      return formatIsoDate(Number(isoDate[1]), Number(isoDate[2]), Number(isoDate[3])) || text
+    }
+    const dayFirstDate = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?:\D|$)/)
+    if (dayFirstDate) {
+      return formatIsoDate(Number(dayFirstDate[3]), Number(dayFirstDate[2]), Number(dayFirstDate[1])) || text
+    }
     const parsedDate = new Date(text)
     return Number.isNaN(parsedDate.getTime())
       ? text
@@ -773,7 +786,7 @@ export function normalizeProcurementCell(field, value, date1904 = false) {
 }
 
 export function getProcurementRowDate(row) {
-  return row.miroPostingDate || row.grnDate || row.poDate || row.prDate || ''
+  return row.miroPostingDate || row.grnDate || row.poDate || row.prDate || row.date || ''
 }
 
 export function getProcurementTransactionKey(row, transaction) {
@@ -1161,7 +1174,7 @@ export function buildProcurementSummaryTables(rows, availableFields) {
   const vendorPerformanceGroups = new Map()
   const getVendorGroup = (row) => {
     const vendorKey = row.vendorId || row.vendorName || `unspecified-${row.rowNumber}`
-    const currency = row.currency || row.conversionCurrency || 'Unspecified currency'
+    const currency = row.currency || row.conversionCurrency || 'INR'
     const key = `${vendorKey}|${currency}`
     let group = vendorPerformanceGroups.get(key)
     if (!group) {

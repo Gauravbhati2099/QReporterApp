@@ -35,6 +35,10 @@ import {
   ProcurementReportCatalog,
   ProcurementReportDashboard,
 } from './ProcurementReports'
+import PrintPreviewDialog from './PrintPreviewDialog'
+import ReportErrorBoundary from './ReportErrorBoundary'
+import ReportExportMenu from './ReportExportMenu'
+import { exportRowsToExcel } from './lib/reportExport'
 import './App.css'
 
 const FILTERS = [
@@ -43,7 +47,7 @@ const FILTERS = [
   { key: 'currencies', label: 'Currency', rowKey: 'currency' },
 ]
 
-function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isPresenting, navigate, onTogglePresentation }) {
+function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isPresenting, navigate, onPreviewPrint, onTogglePresentation }) {
   const { reportId } = useParams()
   const fields = new Set(columns.map((column) => column.field).filter(Boolean))
   const availableReports = getAvailableProcurementReports(reports, fields)
@@ -71,6 +75,7 @@ function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isP
       fileName={fileName}
       isPresenting={isPresenting}
       navigate={navigate}
+      onPreviewPrint={onPreviewPrint}
       onTogglePresentation={onTogglePresentation}
       report={report}
       summaryTables={summaryTables}
@@ -448,14 +453,16 @@ function formatExactMoney(amount, currency) {
   })} ${currency}`
 }
 
+const SUMMARY_EXPORT_COLUMNS = [
+  ['Sales Organization', (row) => row.salesOrganization],
+  ['Usage group', (row) => row.usage],
+  ['Currency', (row) => row.currency],
+  ['Quotations', (row) => row.count],
+  ['Total value (original currency)', (row) => row.value],
+]
+
 function makeCsv(rows) {
-  const columns = [
-    ['Sales Organization', (row) => row.salesOrganization],
-    ['Usage group', (row) => row.usage],
-    ['Currency', (row) => row.currency],
-    ['Quotations', (row) => row.count],
-    ['Total value (original currency)', (row) => row.value],
-  ]
+  const columns = SUMMARY_EXPORT_COLUMNS
   const escapeCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
   return [
     columns.map(([label]) => escapeCell(label)).join(','),
@@ -495,9 +502,15 @@ const PROCESSED_DATA_COLUMNS = [
   { key: 'inr', label: 'INR' },
 ]
 
-function getDataCellValue(row, column, view) {
+function getDataCellValue(row, column, view, datasetType) {
   if (view === 'raw') {
-    return row.sourceValues?.[column.sourceIndex] || '—'
+    return row.sourceValues?.[column.sourceIndex] ?? '—'
+  }
+  if (datasetType === 'procurement') {
+    const value = column.field
+      ? row[column.field]
+      : row.sourceValues?.[column.sourceIndex]
+    return value == null || value === '' ? '—' : String(value)
   }
   if (column.key === 'amount') {
     return Number.isFinite(row.amount) ? formatMoney(row.amount, row.currency) : '—'
@@ -506,6 +519,11 @@ function getDataCellValue(row, column, view) {
     return row.inr != null ? formatMoney(row.inr, 'INR') : '—'
   }
   return row[column.key] || '—'
+}
+
+function summarizeSelectedValues(selected, options) {
+  if (selected.length === options.length) return 'All'
+  return selected.length ? selected.join(', ') : 'None'
 }
 
 function App() {
@@ -522,6 +540,7 @@ function AppShell() {
   const themeButtonRef = useRef(null)
   const navigate = useNavigate()
   const location = useLocation()
+  const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false)
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
   const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
   const [rawDataRows, setRawDataRows] = useState([])
@@ -727,7 +746,9 @@ function AppShell() {
     usage: [...new Set(rawDataRows.map((row) => row.usage).filter(Boolean))].sort(),
     currency: [...new Set(rawDataRows.map((row) => row.currency).filter(Boolean))].sort(),
   }), [rawDataRows])
-  const displayedDataColumns = rawDataView === 'raw' ? rawDataColumns : PROCESSED_DATA_COLUMNS
+  const displayedDataColumns = datasetType === 'procurement'
+    ? rawDataView === 'raw' ? rawDataColumns : rawDataColumns.filter((column) => column.field)
+    : rawDataView === 'raw' ? rawDataColumns : PROCESSED_DATA_COLUMNS
 
   const visibleRawRows = useMemo(() => {
     const query = rawDataSearch.trim().toLowerCase()
@@ -957,6 +978,10 @@ function AppShell() {
     URL.revokeObjectURL(url)
   }
 
+  async function downloadExcel() {
+    await exportRowsToExcel(tableRows, SUMMARY_EXPORT_COLUMNS, 'quotation-summary')
+  }
+
   async function clearLocalData() {
     const confirmed = window.confirm(
       'Clear the saved workbook and all local report data from this browser? This cannot be undone.',
@@ -1029,6 +1054,11 @@ function AppShell() {
     }
   }
 
+  function printCurrentReport() {
+    setIsPrintPreviewOpen(false)
+    window.requestAnimationFrame(() => window.print())
+  }
+
   return (
     <div className={`app-shell theme-${theme}${isPresenting ? ' is-presenting' : ''}`}>
       <header className="topbar">
@@ -1044,9 +1074,9 @@ function AppShell() {
                 <>
                   <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/dashboard">Dashboard</NavLink>
                   <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
-                  <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
                 </>
               )}
+              <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
             </nav>
           )}
         </div>
@@ -1116,6 +1146,7 @@ function AppShell() {
             Restoring the saved workbook from this browser…
           </section>
         ) : (
+          <ReportErrorBoundary key={location.pathname} onBack={() => navigate('/reports')}>
           <Routes>
             <Route
               path="/"
@@ -1269,6 +1300,7 @@ function AppShell() {
                     fileName={fileInfo?.name}
                     isPresenting={isPresenting}
                     navigate={navigate}
+                    onPreviewPrint={() => setIsPrintPreviewOpen(true)}
                     onTogglePresentation={togglePresentationMode}
                     reports={PROCUREMENT_REPORTS}
                     summaryTables={summaryTables}
@@ -1306,6 +1338,28 @@ function AppShell() {
                     : 'All available dates'}
                   {fileInfo && <span className="source-name"><Icon name="file" size={14} />{fileInfo.name}</span>}
                 </p>
+                <div className="print-filter-summary">
+                  <strong>Applied filters:</strong>
+                  <span>
+                    Date range: {dateFrom
+                      ? `${formatDateLabel(dateFrom)}${dateTo ? ` — ${formatDateLabel(dateTo)}` : ' (single day)'}`
+                      : dateTo
+                        ? `Through ${formatDateLabel(dateTo)}`
+                        : 'All available dates'}
+                  </span>
+                  <span>Sales organization: {summarizeSelectedValues(selections.organizations, options.organizations)}</span>
+                  <span>Usage group: {summarizeSelectedValues(selections.usages, options.usages)}</span>
+                  <span>Currency: {summarizeSelectedValues(selections.currencies, options.currencies)}</span>
+                  <span>
+                    Outlier filter: {({
+                      all: 'Include all values',
+                      zero: 'Exclude zero-value quotations',
+                      iqr: 'Exclude 1.5 IQR outliers',
+                      mad: 'Exclude Modified Z-Score (MAD) outliers',
+                      percentile: `Percentile range (${percentileTail}%–${100 - percentileTail}%)`,
+                    })[outlierFilter]}
+                  </span>
+                </div>
               </div>
               <div className="heading-actions">
                 <button
@@ -1317,9 +1371,11 @@ function AppShell() {
                   <Icon name="present" size={16} />
                   {isPresenting ? 'Exit presentation' : 'Present'}
                 </button>
-                <button className="button button-outline" onClick={downloadCsv} type="button">
-                  <Icon name="download" size={16} /> Export CSV
-                </button>
+                <ReportExportMenu
+                  onExportCsv={downloadCsv}
+                  onExportExcel={downloadExcel}
+                  onPreview={() => setIsPrintPreviewOpen(true)}
+                />
                 <button
                   className="button button-primary"
                   disabled={isReading || isRestoring}
@@ -1686,17 +1742,21 @@ function AppShell() {
             <Route
               path="/raw-data"
               element={
-                datasetType !== 'procurement' && rows.length ? (
+                (datasetType === 'procurement' || rows.length) ? (
                   <section className="panel preview-panel page-section">
                     <div className="table-heading">
                       <div>
-                        <h2>Workbook data</h2>
-                        <p>Compare the original workbook with the processed quotation dataset.</p>
+                        <h2>{datasetType === 'procurement' ? 'Procurement workbook data' : 'Workbook data'}</h2>
+                        <p>
+                          {datasetType === 'procurement'
+                            ? 'Inspect the original procurement workbook or its normalized fields.'
+                            : 'Compare the original workbook with the processed quotation dataset.'}
+                        </p>
                       </div>
                       <span className="result-pill">
                         {rawDataView === 'raw'
                           ? `${formatCount(visibleRawRows.length)} / ${formatCount(rawDataRows.length)} rows`
-                          : `${formatCount(filteredRows.length)} processed rows`}
+                          : `${formatCount(datasetType === 'procurement' ? visibleRawRows.length : filteredRows.length)} processed rows`}
                       </span>
                     </div>
                     <div className="raw-data-toolbar">
@@ -1729,21 +1789,21 @@ function AppShell() {
                         </label>
                         <div className="raw-data-slicers">
                           <select
-                            aria-label="Filter by sales organization"
+                            aria-label={datasetType === 'procurement' ? 'Filter by plant' : 'Filter by sales organization'}
                             onChange={(event) => setRawDataSlicers((current) => ({ ...current, salesOrganization: event.target.value }))}
                             value={rawDataSlicers.salesOrganization}
                           >
-                            <option value="">All organizations</option>
+                            <option value="">{datasetType === 'procurement' ? 'All plants' : 'All organizations'}</option>
                             {rawDataOptions.salesOrganization.map((value) => (
                               <option key={value} value={value}>{value}</option>
                             ))}
                           </select>
                           <select
-                            aria-label="Filter by usage group"
+                            aria-label={datasetType === 'procurement' ? 'Filter by material group' : 'Filter by usage group'}
                             onChange={(event) => setRawDataSlicers((current) => ({ ...current, usage: event.target.value }))}
                             value={rawDataSlicers.usage}
                           >
-                            <option value="">All usages</option>
+                            <option value="">{datasetType === 'procurement' ? 'All material groups' : 'All usages'}</option>
                             {rawDataOptions.usage.map((value) => (
                               <option key={value} value={value}>{value}</option>
                             ))}
@@ -1797,16 +1857,16 @@ function AppShell() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(rawDataView === 'raw' ? visibleRawRows : filteredRows).map((row, index) => (
+                          {(rawDataView === 'raw' || datasetType === 'procurement' ? visibleRawRows : filteredRows).map((row, index) => (
                             <tr key={rawDataView === 'raw' ? `${row.document || 'row'}-${row.rowNumber ?? index}` : `${row.document}-${row.salesOrganization}-${row.usage}-${row.currency}-${index}`}>
                               {displayedDataColumns.map((column) => (
                                 <td key={column.key}>
-                                  {getDataCellValue(row, column, rawDataView)}
+                                  {getDataCellValue(row, column, rawDataView, datasetType)}
                                 </td>
                               ))}
                             </tr>
                           ))}
-                          {((rawDataView === 'raw' ? visibleRawRows : filteredRows).length === 0) && (
+                          {((rawDataView === 'raw' || datasetType === 'procurement' ? visibleRawRows : filteredRows).length === 0) && (
                             <tr><td className="empty-table" colSpan={displayedDataColumns.length}>No matching rows found.</td></tr>
                           )}
                         </tbody>
@@ -1820,6 +1880,7 @@ function AppShell() {
             />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          </ReportErrorBoundary>
         )}
 
         {(status || error) && (
@@ -1842,6 +1903,11 @@ function AppShell() {
         onChange={(event) => void handleFiles(event.target.files)}
         ref={inputRef}
         type="file"
+      />
+      <PrintPreviewDialog
+        onClose={() => setIsPrintPreviewOpen(false)}
+        onPrint={printCurrentReport}
+        open={isPrintPreviewOpen}
       />
     </div>
   )
