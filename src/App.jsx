@@ -1063,9 +1063,9 @@ function AppShell() {
     <div className={`app-shell theme-${theme}${isPresenting ? ' is-presenting' : ''}`}>
       <header className="topbar">
         <div className="topbar-left">
-          <a className="brand" href="#" aria-label="Quotation Usage Dashboard home">
+          <a className="brand" href="#" aria-label="Config Usage Dashboard home">
             <span className="brand-mark"><Icon name="chart" size={20} /></span>
-            <span className="brand-name">Quotation Usage Dashboard</span>
+            <span className="brand-name">Config Usage Dashboard</span>
           </a>
           {(rows.length > 0 || datasetType === 'procurement') && (
             <nav aria-label="Main pages" className="topbar-nav">
@@ -1325,7 +1325,7 @@ function AppShell() {
                 </div>
                 <h1>
                   {groupBy === 'usage'
-                    ? 'Quotation Usage Dashboard'
+                    ? 'Config Usage Dashboard'
                     : groupBy === 'currency'
                       ? 'Currency breakdown'
                       : 'Quotation overview'}
@@ -1892,7 +1892,7 @@ function AppShell() {
         )}
 
         <footer className="app-footer">
-          <span><b>Quotation Usage Dashboard</b> · SAP reporting</span>
+          <span><b>Config Usage Dashboard</b> · SAP reporting</span>
           <span><i /> Your spreadsheet stays on this device</span>
         </footer>
       </main>
