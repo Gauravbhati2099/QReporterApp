@@ -132,7 +132,7 @@ const REPORT_CARDS = [
   },
   {
     id: 'usage',
-    title: 'Quotation Usage Dashboard',
+    title: 'Config Usage Dashboard',
     description: 'Compare manual quotations with configurator-generated quotations.',
     groupBy: 'usage',
     icon: 'check',
