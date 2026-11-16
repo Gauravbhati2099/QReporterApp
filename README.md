@@ -1,6 +1,6 @@
-# QReporter App
+# Quotation Usage Dashboard
 
-QReporter is a browser-based dashboard for SAP quotation and procurement data. It detects the workbook structure, validates the required columns for that data type, and displays only the reports supported by the uploaded XLSX.
+Quotation Usage Dashboard is a browser-based dashboard for SAP quotation and procurement data. It detects the workbook structure, validates the required columns for that data type, and displays only the reports supported by the uploaded XLSX.
 
 The application is intentionally local-first: the workbook is processed in the browser, no backend API is required, and the latest workbook is stored in IndexedDB for automatic restore on the next visit.
 
@@ -86,7 +86,7 @@ Important processing rules:
 - `currency` is normalized to uppercase text
 - `amount` is parsed from the original value text, including currency symbols and negative values in parentheses
 - `date` is normalized to `YYYY-MM-DD`
-- `inr` is calculated using conversion rates defined in `EXCHANGE_RATES`
+- `inr` is calculated using the currency's configured rate in `EXCHANGE_RATES`
 
 Example conversion logic:
 
