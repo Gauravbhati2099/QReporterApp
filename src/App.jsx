@@ -1054,11 +1054,6 @@ function AppShell() {
     }
   }
 
-  function printCurrentReport() {
-    setIsPrintPreviewOpen(false)
-    window.requestAnimationFrame(() => window.print())
-  }
-
   return (
     <div className={`app-shell theme-${theme}${isPresenting ? ' is-presenting' : ''}`}>
       <header className="topbar">
@@ -1906,7 +1901,6 @@ function AppShell() {
       />
       <PrintPreviewDialog
         onClose={() => setIsPrintPreviewOpen(false)}
-        onPrint={printCurrentReport}
         open={isPrintPreviewOpen}
       />
     </div>
