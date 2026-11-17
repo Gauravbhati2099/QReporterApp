@@ -1135,7 +1135,7 @@ function AppShell() {
         </div>
       </header>
 
-      <main className={`workspace${location.pathname === '/' ? ' welcome-workspace' : ''}`}>
+      <main className={`workspace${location.pathname === '/' ? ' welcome-workspace' : ''}${location.pathname !== '/' && location.pathname !== '/reports' && location.pathname !== '/reports/' ? ' compact-workspace' : ''}`}>
         {isRestoring ? (
           <section aria-live="polite" className="panel restore-card">
             Restoring the saved workbook from this browser…

@@ -456,6 +456,10 @@
   padding: 36px 0 0;
 }
 
+.workspace.compact-workspace {
+  padding-top: 20px;
+}
+
 @media (min-width: 1800px) {
   .workspace,
   .app-shell.is-presenting .workspace {
@@ -2309,6 +2313,10 @@
     padding-top: 22px;
   }
 
+  .workspace.compact-workspace {
+    padding-top: 6px;
+  }
+
   .topbar-actions {
     gap: 7px;
   }
@@ -2604,7 +2612,7 @@
 }
 
 .report-selection {
-  padding: 16px 0 40px;
+  padding: 0 0 40px;
 }
 
 .report-selection-heading {
