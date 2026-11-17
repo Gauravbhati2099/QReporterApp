@@ -478,6 +478,14 @@
   transform: scale(1.015);
 }
 
+.workspace.welcome-workspace {
+  padding-top: 0;
+}
+
+.workspace.welcome-workspace .welcome-screen {
+  padding-top: 0;
+}
+
 .welcome-copy {
   max-width: 555px;
   padding-bottom: 10px;

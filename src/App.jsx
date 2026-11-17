@@ -1140,7 +1140,7 @@ function AppShell() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className={`workspace${location.pathname === '/' ? ' welcome-workspace' : ''}`}>
         {isRestoring ? (
           <section aria-live="polite" className="panel restore-card">
             Restoring the saved workbook from this browser…
