@@ -449,6 +449,8 @@
 }
 
 .workspace {
+  display: flex;
+  flex-direction: column;
   position: relative;
   width: min(1600px, calc(100% - clamp(24px, 6vw, 96px)));
   min-height: calc(100vh - 64px);
@@ -2071,6 +2073,7 @@
 .app-footer {
   display: flex;
   min-height: 50px;
+  margin-top: auto;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
