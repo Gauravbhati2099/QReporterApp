@@ -7,8 +7,9 @@ import {
   PROCUREMENT_REPORTS,
 } from './lib/procurementReports'
 import { formatCount } from './lib/reportData'
-import { exportRowsToExcel } from './lib/reportExport'
+import { exportReportsToHtml, exportRowsToExcel } from './lib/reportExport'
 import ReportExportMenu from './ReportExportMenu'
+import ReportInsightsSummary from './ReportInsightsSummary'
 
 function getAvailableFilters(report, fields) {
   return PROCUREMENT_FILTERS.filter(
@@ -373,40 +374,54 @@ function getReportInsights(report, rows, fields) {
       ? [...issues.entries()]
         .sort((left, right) => right[1] - left[1])
         .slice(0, 4)
-        .map(([type, count]) => `${type}: ${formatCount(count)} record(s) to review.`)
+        .map(([type, count]) => `${type}: ${formatCount(count)} of ${formatCount(rows.length)} exceptions (${(count / rows.length * 100).toFixed(1)}%) need review.`)
       : ['No configured data-quality exceptions were found in the uploaded records.']
   }
   if (report.id === 'order-fulfillment') {
-    const pending = rows.filter((row) => row.pendingQuantity > 0).length
-    const excess = rows.filter((row) => row.pendingQuantity < 0).length
+    const relevant = rows.filter((row) => Number(row.orderedQuantity ?? row.poQuantity) > 0)
+    const pending = relevant.filter((row) => Number(row.pendingQuantity) > 0)
+    const excess = relevant.filter((row) => Number(row.pendingQuantity) < 0)
+    const orderedQuantity = relevant.reduce((sum, row) => sum + Number(row.orderedQuantity ?? row.poQuantity), 0)
+    const pendingQuantity = pending.reduce((sum, row) => sum + Number(row.pendingQuantity), 0)
     return [
-      `${formatCount(pending)} PO item(s) have pending GRN quantity; ${formatCount(excess)} show net receipts above the order quantity.`,
+      `${formatCount(pending.length)} of ${formatCount(relevant.length)} PO items (${relevant.length ? (pending.length / relevant.length * 100).toFixed(1) : '0.0'}%) have ${formatCount(pendingQuantity)} pending units against ${formatCount(orderedQuantity)} ordered units (${orderedQuantity ? (pendingQuantity / orderedQuantity * 100).toFixed(1) : '0.0'}% pending).`,
+      `${formatCount(excess.length)} items have net receipts above ordered quantity; quantify and reconcile these exceptions before closing the order.`,
       'Receipt quantity is net of recognized reversal and return movements; confirm movement conventions for this extract.',
     ]
   }
   if (report.id === 'invoice-tax') {
+    const cleared = rows.filter((row) => row.clearingDate || row.clearingDocumentNumber).length
+    const open = rows.length - cleared
     return [
-      'GST totals use the uploaded MIRO tax amount fields and remain grouped by source currency.',
-      'Clearing time is derived from valid posting and clearing dates; imported day totals are omitted because they can be stale or inconsistent.',
-      'Blank clearing references are not treated as confirmed unpaid invoices.',
+      `This selection has ${formatCount(rows.length)} MIRO records: ${formatCount(cleared)} cleared (${(cleared / rows.length * 100).toFixed(1)}%) and ${formatCount(open)} without a clearing reference (${(open / rows.length * 100).toFixed(1)}%).`,
+      'GST totals use uploaded MIRO tax fields and remain separate by source currency; compare within currency before reconciling.',
+      'Clearing time uses valid posting-to-clearing date pairs. Check open records against due date and payment status; a blank clearing reference alone does not prove an invoice is overdue.',
     ]
   }
   if (report.id === 'tat-analysis') {
-    const invalid = rows.filter((row) => row.tatDays < 0).length
+    const invalid = rows.filter((row) => Number(row.tatDays) < 0).length
+    const validDays = rows.map((row) => Number(row.tatDays)).filter((days) => Number.isFinite(days) && days >= 0).sort((left, right) => left - right)
+    const percentile = (fraction) => validDays.length ? validDays[Math.min(validDays.length - 1, Math.ceil(validDays.length * fraction) - 1)] : null
+    const median = percentile(0.5)
+    const p90 = percentile(0.9)
     const stages = [...new Set(rows.map((row) => row.tatStage).filter(Boolean))]
     const insights = [
-      'Turnaround time is elapsed calendar days between the displayed stage start and end dates.',
+      `${formatCount(validDays.length)} of ${formatCount(rows.length)} stage intervals have valid non-negative durations; median is ${median == null ? 'unavailable' : `${median.toFixed(1)} days`} and the 90th percentile is ${p90 == null ? 'unavailable' : `${p90.toFixed(1)} days`}.`,
       stages.length
         ? `Stages measured: ${stages.join(', ')}.`
         : 'No complete linked date pairs were found for the selected filters.',
       `${formatCount(invalid)} stage(s) have an end date earlier than the start date and should be checked.`,
+      'Compare the median and 90th percentile with your internal stage targets; investigate the longest intervals first.',
     ]
     if (!fields.has('vendorFinalizationDate')) {
       insights.splice(2, 0, 'PO-to-vendor-finalization TAT is not calculated because no vendor confirmation/finalization date column was recognized.')
     }
     return insights
   }
-  return ['Values are calculated from the imported PO-item summaries; currencies are kept separate.']
+  return [
+    `${formatCount(rows.length)} ${getReportLevelLabel(report)} records match the active filters.`,
+    'Currency values remain grouped by source currency. Prioritize the largest supplier/material/plant groups for review, then validate document linkage before changing purchasing decisions.',
+  ]
 }
 
 function exportRows(rows, columns, report) {
@@ -512,6 +527,13 @@ export function ProcurementReportCatalog({ summaryTables, sourceRowCount, column
               </span>
               <span className="report-readiness">
                 {formatCount(summaryTables?.[report.summaryTable]?.length ?? 0)} summarized records
+              </span>
+              <span className="report-required-columns">
+                <strong>Required columns</strong>
+                {[
+                  ...report.requiredFields.map(getProcurementFieldLabel),
+                  ...report.anyOfFields.map((group) => `one of: ${group.map(getProcurementFieldLabel).join(' / ')}`),
+                ].join(' · ') || 'No specific source columns'}
               </span>
               <button
                 className="report-card-action"
@@ -793,6 +815,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
   const [search, setSearch] = useState('')
   const [tableFilters, setTableFilters] = useState({})
   const [sort, setSort] = useState({ field: '', direction: 'asc' })
+  const [linkedRowKey, setLinkedRowKey] = useState('')
   const [chartDimension, setChartDimension] = useState(report.dimension)
   const [chartMetric, setChartMetric] = useState(report.metric)
   const [page, setPage] = useState(0)
@@ -887,6 +910,20 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
       return result * direction
     })
   }, [searchedRows, sort])
+  useEffect(() => {
+    const syncLinkedRow = () => setLinkedRowKey(decodeURIComponent(window.location.hash.slice(1)))
+    syncLinkedRow()
+    window.addEventListener('hashchange', syncLinkedRow)
+    return () => window.removeEventListener('hashchange', syncLinkedRow)
+  }, [])
+  useEffect(() => {
+    if (!linkedRowKey) return
+    const matchIndex = orderedRows.findIndex((row) =>
+      [row.poNumber, row.prNumber, row.grnNumber, row.miroNumber, row.invoiceNumber]
+        .some((value) => String(value ?? '') === linkedRowKey),
+    )
+    if (matchIndex >= 0) setPage(Math.floor(matchIndex / 15))
+  }, [linkedRowKey, orderedRows])
   const pageSize = 15
   const pageCount = Math.max(1, Math.ceil(orderedRows.length / pageSize))
   const visiblePage = Math.min(page, pageCount - 1)
@@ -963,6 +1000,42 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
   ]
   const chartData = getMetricGroups(metricRows, activeMetric, activeDimension)
   const insights = getReportInsights(report, metricRows, fieldSet)
+  const insightKpis = displayedKpis.map((kpi) => {
+    let definition = kpi.description
+    if (!definition && report.id === 'tat-analysis' && kpi.metric.key === 'recordCount') {
+      definition = 'Unique linked stage intervals with both dates; a document can count in multiple stages.'
+    } else if (!definition && report.id === 'tat-analysis' && kpi.metric.key === 'tatDays') {
+      definition = 'Elapsed calendar days across completed intervals; negative intervals are excluded.'
+    } else if (!definition && kpi.metric.kind === 'currency') {
+      definition = `Sum of ${kpi.label.toLowerCase()} in ${kpi.currency} at ${getReportLevelLabel(report)}; source currency is retained without conversion.`
+    } else if (!definition && kpi.metric.kind === 'distinct') {
+      const dimensions = kpi.metric.fields.map(getProcurementFieldLabel).join(' or ')
+      definition = `Distinct ${dimensions || kpi.label.toLowerCase()} values among filtered ${getReportLevelLabel(report)} records.`
+    } else if (!definition && kpi.metric.kind === 'average') {
+      definition = kpi.metric.key === 'clearingDays'
+        ? 'Mean calendar days between valid MIRO posting and clearing dates; incomplete or reversed date pairs are excluded.'
+        : `Mean ${kpi.label.toLowerCase()} across valid filtered ${getReportLevelLabel(report)} records.`
+    } else if (!definition && kpi.metric.kind === 'count') {
+      definition = `Count of ${getReportLevelLabel(report)} records represented by the active filters.`
+    } else if (!definition) {
+      definition = `Sum of ${kpi.label.toLowerCase()} across filtered ${getReportLevelLabel(report)} records; blank values do not contribute.`
+    }
+    return { label: `${kpi.label}${kpi.currency ? ` · ${kpi.currency}` : ''}`, definition }
+  })
+  const chartRules = [
+    `The selected measure (${activeMetric.label}) is grouped by ${getProcurementFieldLabel(activeDimension)} after the report filters are applied.`,
+    activeMetric.kind === 'average'
+      ? 'Average charts use valid non-negative values; clearing time requires valid posting and clearing dates.'
+      : activeMetric.kind === 'distinct'
+        ? 'Distinct counts deduplicate the selected identifier within each group.'
+        : 'Count measures count report-level records; additive measures sum their available field values.',
+    activeMetric.kind === 'currency'
+      ? 'Currency groups stay separate, and each currency shows up to 8 groups ranked by absolute value; pie shares use the displayed groups as the denominator.'
+      : 'Charts show up to 8 groups ranked by absolute measure value; pie shares use the displayed groups as the denominator.',
+    ...(report.id === 'tat-analysis'
+      ? ['Turnaround time uses elapsed calendar days between each stage start and end; intervals with missing or negative durations are excluded.']
+      : []),
+  ]
   const fulfillment = report.id === 'order-fulfillment'
     ? (() => {
       const relevant = metricRows.filter((row) => Number(row.orderedQuantity) > 0)
@@ -995,6 +1068,50 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
       }
     })()
     : null
+  const decisionHelpers = []
+  const topChartGroup = chartData[0]
+  if (topChartGroup) {
+    if (activeMetric.kind === 'distinct') {
+      decisionHelpers.push(
+        `${formatCount(countDistinctValues(metricRows, activeMetric.fields))} distinct ${activeMetric.label.toLowerCase()} are present in the filtered records. Use the report table to inspect the underlying identifiers before prioritizing follow-up.`,
+      )
+    } else if (activeMetric.kind === 'average') {
+      const validValues = metricRows.map((row) => getMetricValue(row, activeMetric)).filter((value) => Number.isFinite(value) && value >= 0)
+      const overallAverage = validValues.length ? validValues.reduce((sum, value) => sum + value, 0) / validValues.length : null
+      decisionHelpers.push(
+        `Highest group: ${topChartGroup.label} at ${formatMetric(topChartGroup.value, activeMetric)}${overallAverage == null ? '' : ` versus ${formatMetric(overallAverage, activeMetric)} overall`}. Compare it with the team’s service target and inspect the underlying documents.`,
+      )
+    } else {
+      const relevantRows = activeMetric.kind === 'currency'
+        ? metricRows.filter((row) => (row.currency || row.conversionCurrency || 'INR') === topChartGroup.currency)
+        : metricRows
+      const total = relevantRows.reduce((sum, row) => {
+        const value = getMetricValue(row, activeMetric)
+        return Number.isFinite(value) ? sum + Math.abs(value) : sum
+      }, 0)
+      const share = total ? Math.abs(topChartGroup.value) / total * 100 : null
+      decisionHelpers.push(
+        `Largest group: ${topChartGroup.label}${topChartGroup.currency ? ` (${topChartGroup.currency})` : ''} at ${formatMetric(topChartGroup.value, activeMetric, topChartGroup.currency)}${share == null ? '' : `, ${share.toFixed(1)}% of the filtered total`}. Review this group first and verify its source documents.`,
+      )
+    }
+  }
+  if (report.id === 'order-fulfillment' && fulfillment) {
+    const completionRate = fulfillment.averageCompletionRate
+    decisionHelpers.push(
+      `${formatCount(fulfillment.notReceivedCount)} items have no net receipt; overall quantity completion is ${completionRate == null ? 'unavailable' : `${completionRate.toFixed(1)}%`}. Start with the highest pending quantities and confirm expected delivery dates.`,
+    )
+  } else if (report.id === 'invoice-tax' && settlement) {
+    const clearedRate = metricRows.length ? settlement.clearedCount / metricRows.length * 100 : 0
+    decisionHelpers.push(
+      `Average clearing time is ${settlement.averageClearingDays == null ? 'unavailable' : `${settlement.averageClearingDays.toFixed(1)} days`} across valid date pairs; ${clearedRate.toFixed(1)}% have a clearing reference. Review the oldest open invoices against due dates and payment status.`,
+    )
+  } else if (report.id === 'tat-analysis') {
+    decisionHelpers.push('Use the 90th percentile and longest completed intervals to prioritize bottleneck investigation; compare against your organization’s SLA before escalating.')
+  } else if (report.id === 'data-quality') {
+    decisionHelpers.push('Resolve the most frequent exception class first, then reprocess the workbook and confirm that the exception count falls.')
+  } else if (topChartGroup) {
+    decisionHelpers.push('Use the ranked group as a review queue; confirm currency, PO/GRN/MIRO linkage, and business context before taking action.')
+  }
 
   useEffect(() => {
     setChartDimension(report.dimension)
@@ -1061,6 +1178,123 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
           <ReportExportMenu
             onExportCsv={() => exportRows(orderedRows, displayColumns, report)}
             onExportExcel={exportExcel}
+            onExportHtml={() => exportReportsToHtml({
+              title: report.title,
+              subtitle: `${report.description} · ${fileName || 'Procurement data'}. Includes all rows matching the active report filters.`,
+              fileName: report.id,
+              dashboard: {
+                reportTitle: report.title,
+                category: report.category,
+                number: report.number,
+                dateRange: printDateRange,
+                filters: printFilterSummary,
+                kpis: displayedKpis.filter((kpi) => !(
+                  report.id === 'order-fulfillment' &&
+                  ['poQuantity', 'receivedQuantity', 'pendingQuantity'].includes(kpi.metric.key)
+                )).map((kpi) => ({
+                  label: `${kpi.label}${kpi.currency ? ` · ${kpi.currency}` : ''}`,
+                  value: formatMetric(kpi.value, kpi.metric, kpi.currency),
+                  description: report.id === 'tat-analysis' && kpi.metric.key === 'recordCount'
+                    ? 'Unique linked stage intervals with both dates; a document can count in multiple stages.'
+                    : report.id === 'tat-analysis' && kpi.metric.key === 'tatDays'
+                      ? 'Elapsed calendar days across completed intervals; negative intervals are excluded.'
+                      : kpi.metric.kind === 'currency'
+                        ? 'Source currency; not converted'
+                        : kpi.description ?? 'Based on filtered summary rows',
+                })),
+                chart: {
+                  heading: report.id === 'tat-analysis' ? 'Stage turnaround analysis' : 'Performance breakdown',
+                  description: report.id === 'tat-analysis'
+                    ? 'Compare elapsed calendar days across stages or available groups.'
+                    : 'Compare the selected measure across available groups.',
+                  title: `${activeMetric.label} by ${getProcurementFieldLabel(activeDimension).toLowerCase()}`,
+                  subtitle: `Ranked by ${getProcurementFieldLabel(activeDimension)}`,
+                  metricLabel: activeMetric.label,
+                  metricKind: activeMetric.kind,
+                  dimensionLabel: getProcurementFieldLabel(activeDimension),
+                  entries: chartData.map((entry) => ({
+                    ...entry,
+                    formatted: formatMetric(entry.value, activeMetric, entry.currency),
+                  })),
+                  stages: report.id === 'tat-analysis' ? getTatStageSummaries(metricRows).map((stage) => ({
+                    ...stage,
+                    medianLabel: formatMetric(stage.median, { kind: 'average' }),
+                    averageLabel: formatMetric(stage.average, { kind: 'average' }),
+                  })) : [],
+                },
+                insights,
+                decisionHelpers,
+                tableTitle: 'Report summary table',
+                tableDescription: `${orderedRows.length.toLocaleString('en-IN')} rows · ${getReportLevelLabel(report)} · ${printFilterSummary.join(' · ')}`,
+                columns: [
+                  ...displayColumns.map((column) => ({
+                    label: column.label,
+                    key: column.field,
+                    getValue: (row) => formatTableValue(row[column.field] ?? row.sourceValues?.[column.sourceIndex], column.field),
+                    getLink: (row) => {
+                      const key = row.poNumber ?? row.prNumber ?? row.grnNumber ?? row.miroNumber ?? row.invoiceNumber
+                      return key ? `${window.location.origin}/reports/${report.id}#${encodeURIComponent(key)}` : `${window.location.origin}/reports/${report.id}`
+                    },
+                  })),
+                  ...(report.id === 'pending-grn-report' ? [{ label: 'Pending quantity', getValue: (row) => formatCount(row.pendingQuantity) }] : []),
+                ],
+                rows: orderedRows,
+                snapshot: {
+                  type: 'procurement',
+                  reportId: report.id,
+                  rows,
+                  grnRows: summaryTables?.poGrnMiro ?? [],
+                  filters: filterOptions.map(([field, label]) => ({
+                    key: field,
+                    label,
+                    values: getFilterOptions(rows, field).map((option) => option.value),
+                    selected: filters[field] ?? getFilterOptions(rows, field).map((option) => option.value),
+                  })),
+                  dateField,
+                  dateFrom: selectedDateFrom,
+                  dateTo: selectedDateTo,
+                  tatStageFilter,
+                  tatStageOptions,
+                  chartMetric: activeMetric,
+                  chartMetrics,
+                  chartDimension: activeDimension,
+                  chartDimensions,
+                  metricFields: [...metricFields],
+                  kpis: displayedKpis.filter((kpi) => !(
+                    report.id === 'order-fulfillment' &&
+                    ['poQuantity', 'receivedQuantity', 'pendingQuantity'].includes(kpi.metric.key)
+                  )).map((kpi) => ({ ...kpi, metric: { ...kpi.metric } })),
+                  columns: [
+                    ...displayColumns.map((column) => ({
+                      label: column.label,
+                      key: column.field,
+                      sourceIndex: column.sourceIndex,
+                    })),
+                    ...(report.id === 'pending-grn-report' ? [{ label: 'Pending quantity', key: 'pendingQuantity' }] : []),
+                  ],
+                  tableTitle: 'Report summary table',
+                  tableDescription: `${getReportLevelLabel(report)} · ${printFilterSummary.join(' · ')}`,
+                },
+                rowLink: (row) => {
+                  const key = row.poNumber ?? row.prNumber ?? row.grnNumber ?? row.miroNumber ?? row.invoiceNumber
+                  return `${window.location.origin}/reports/${report.id}${key ? `#${encodeURIComponent(key)}` : ''}`
+                },
+                metrics: (report.id === 'order-fulfillment' && fulfillment
+                  ? [
+                    ['Fully received items', formatCount(fulfillment.fullyReceivedCount)],
+                    ['Partially received items', formatCount(fulfillment.partiallyReceivedCount)],
+                    ['Not received items', formatCount(fulfillment.notReceivedCount)],
+                    ['Average item completion', fulfillment.averageCompletionRate == null ? '—' : `${fulfillment.averageCompletionRate.toFixed(1)}%`],
+                    ['Net pending quantity', formatCount(fulfillment.pendingQuantity)],
+                  ]
+                  : report.id === 'invoice-tax' && settlement
+                    ? [
+                      ['Cleared invoices', formatCount(settlement.clearedCount)],
+                      ['Open invoices', formatCount(settlement.openCount)],
+                      ['Average clearing time', settlement.averageClearingDays == null ? '—' : `${settlement.averageClearingDays.toFixed(1)} days`],
+                    ] : []),
+              },
+            })}
             onPreview={onPreviewPrint}
           />
         </div>
@@ -1260,8 +1494,11 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((row, index) => (
-                <tr key={`${row.rowNumber}-${index}`}>
+              {pageRows.map((row, index) => {
+                const rowKey = [row.poNumber, row.prNumber, row.grnNumber, row.miroNumber, row.invoiceNumber]
+                  .find((value) => String(value ?? '') === linkedRowKey)
+                return (
+                <tr key={`${row.rowNumber}-${index}`} id={rowKey ? encodeURIComponent(linkedRowKey) : undefined} className={rowKey ? 'linked-report-row' : undefined}>
                   {displayColumns.map((column) => (
                     <td key={`${column.key}-${column.sourceIndex}`}>
                       {String(formatTableValue(row[column.field] ?? row.sourceValues?.[column.sourceIndex], column.field))}
@@ -1269,7 +1506,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
                   ))}
                   {report.id === 'pending-grn-report' && <td>{formatCount(row.pendingQuantity)}</td>}
                 </tr>
-              ))}
+              )})}
               {pageRows.length === 0 && (
                 <tr><td className="empty-table" colSpan={displayColumns.length + (report.id === 'pending-grn-report' ? 1 : 0)}>No records match the current filters.</td></tr>
               )}
@@ -1289,11 +1526,13 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
         </div>
       </section>
 
-      <section className="panel procurement-insights">
-        <div className="procurement-section-heading">
-          <div><h2>Business insights & recommended checks</h2><p>Observations below are generated from the current workbook and filters.</p></div>
-        </div>
-        <ul>{insights.map((insight) => <li key={insight}>{insight}</li>)}</ul>
+      <ReportInsightsSummary
+        chartRules={chartRules}
+        decisionHelpers={decisionHelpers}
+        insights={insights}
+        kpis={insightKpis}
+      />
+      {(report.id === 'order-fulfillment' || report.id === 'invoice-tax') && <section className="procurement-insights panel">
         {report.id === 'order-fulfillment' && fulfillment && (
           <div className="procurement-analytics-strip" aria-label="Receipt completion analytics">
             <div><span>Fully received items</span><strong>{formatCount(fulfillment.fullyReceivedCount)}</strong></div>
@@ -1314,7 +1553,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
           Blank MIRO fields are treated as missing linkage, not as confirmed unpaid invoices.
           Reconcile movement types, reversals, returns, and document-level keys with your SAP configuration before acting.
         </p>
-      </section>
+      </section>}
     </section>
   )
 }

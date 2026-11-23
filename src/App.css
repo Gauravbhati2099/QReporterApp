@@ -711,8 +711,94 @@
   border-radius: 12px;
   color: var(--muted);
   background: var(--surface-soft);
-  cursor: pointer;
   text-align: left;
+}
+
+.report-insights-summary {
+  margin-top: 18px;
+  padding: 22px;
+}
+
+.report-insights-heading {
+  margin-bottom: 18px;
+}
+
+.report-insights-heading h2 {
+  margin: 5px 0;
+  color: var(--text-strong);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.report-insights-heading p,
+.report-insights-summary dd,
+.report-insights-summary li {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.report-insights-heading p {
+  margin: 0;
+}
+
+.report-insights-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.report-insights-grid section {
+  min-width: 0;
+}
+
+.report-decision-support {
+  grid-column: 1 / -1;
+  padding: 14px 16px;
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--blue) 6%, var(--surface));
+}
+
+.report-insights-grid h3 {
+  margin: 0 0 10px;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.report-insights-grid dl,
+.report-insights-grid ul {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+}
+
+.report-insights-grid dl > div {
+  display: grid;
+  gap: 3px;
+}
+
+.report-insights-grid dt {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.report-insights-grid dd {
+  margin: 0;
+}
+
+.report-insights-grid ul {
+  padding-left: 17px;
+}
+
+@media (max-width: 900px) {
+  .report-insights-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .drop-target > span:nth-child(2) {
@@ -938,6 +1024,12 @@
   color: var(--red);
   font-size: 12px;
   overflow-wrap: anywhere;
+}
+
+.linked-report-row {
+  outline: 2px solid var(--accent, #155eef);
+  outline-offset: -2px;
+  background: var(--surface-soft);
 }
 
 .page-heading h1 {
@@ -1440,6 +1532,100 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 13px;
+}
+
+.trend-interval-control select {
+  min-width: 142px;
+}
+
+.trend-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.trend-chart-panel {
+  min-width: 0;
+  padding: 20px;
+}
+
+.trend-chart-panel .panel-heading {
+  margin-bottom: 14px;
+}
+
+.trend-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.trend-legend i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+
+.trend-insights-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.trend-insight-card {
+  min-width: 0;
+  padding: 16px 18px;
+}
+
+.trend-insight-card > span,
+.trend-insight-card > small {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trend-insight-card > strong {
+  display: block;
+  margin: 6px 0;
+  color: var(--text-strong);
+  font-size: 23px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trend-chart-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.trend-line-chart {
+  display: block;
+  width: 100%;
+  min-width: 520px;
+  overflow: visible;
+}
+
+.trend-grid-line {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.trend-axis-label {
+  fill: var(--muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10px;
+}
+
+.trend-table-panel {
+  margin-top: 22px;
 }
 
 .chart-panel {
@@ -2457,6 +2643,14 @@
     grid-template-columns: 1fr;
   }
 
+  .trend-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .trend-insights-grid {
+    grid-template-columns: 1fr;
+  }
+
   .app-shell.is-presenting .workspace {
     width: calc(100% - 30px);
     padding: 22px 0 24px;
@@ -2778,6 +2972,64 @@
   margin: 20px 0 0;
   color: var(--muted);
   font-size: 12px;
+}
+
+.report-required-columns {
+  display: block;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.report-required-columns strong {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-strong);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+
+.welcome-copy .eyebrow {
+  font-size: 14px;
+}
+
+.welcome-copy > p {
+  font-size: 17px;
+}
+
+.welcome-actions .button-large {
+  min-height: 58px;
+  padding: 0 22px;
+  font-size: 16px;
+}
+
+.file-note {
+  font-size: 13px;
+}
+
+.drop-target strong {
+  font-size: 15px;
+}
+
+.drop-target small {
+  font-size: 13px;
+}
+
+.requirements > span {
+  font-size: 13px;
+}
+
+.workbook-requirement-list b {
+  font-size: 12px;
+}
+
+.workbook-requirement-list p > span {
+  font-size: 11px;
 }
 
 @media (max-width: 970px) {

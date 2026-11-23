@@ -38,7 +38,8 @@ import {
 import PrintPreviewDialog from './PrintPreviewDialog'
 import ReportErrorBoundary from './ReportErrorBoundary'
 import ReportExportMenu from './ReportExportMenu'
-import { exportRowsToExcel } from './lib/reportExport'
+import ReportInsightsSummary from './ReportInsightsSummary'
+import { exportReportsToHtml, exportRowsToExcel } from './lib/reportExport'
 import './App.css'
 
 const FILTERS = [
@@ -144,7 +145,96 @@ const REPORT_CARDS = [
     groupBy: 'currency',
     icon: 'file',
   },
+  {
+    id: 'trend',
+    title: 'Trend analysis',
+    description: 'Track quotation volume and converted value across time brackets.',
+    groupBy: 'trend',
+    icon: 'chart',
+  },
 ]
+
+const TREND_INTERVALS = [
+  { key: 'day', label: 'Daily' },
+  { key: 'week', label: 'Weekly' },
+  { key: 'month', label: 'Monthly' },
+  { key: 'quarter', label: 'Quarterly' },
+  { key: 'year', label: 'Yearly' },
+  { key: 'custom', label: 'Custom range' },
+]
+
+function getTrendBucket(dateValue, interval) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateValue ?? ''))) return null
+  const [year, month, day] = dateValue.split('-').map(Number)
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (interval === 'day') return { key: dateValue, label: formatDateLabel(dateValue) }
+  if (interval === 'week') {
+    const mondayOffset = (date.getUTCDay() + 6) % 7
+    date.setUTCDate(date.getUTCDate() - mondayOffset)
+    const key = date.toISOString().slice(0, 10)
+    return { key, label: `Week of ${formatDateLabel(key)}` }
+  }
+  if (interval === 'quarter') {
+    const quarter = Math.floor((month - 1) / 3) + 1
+    const key = `${year}-Q${quarter}`
+    return { key, label: `Q${quarter} ${year}` }
+  }
+  if (interval === 'year') {
+    const key = String(year)
+    return { key, label: key }
+  }
+  const key = `${year}-${String(month).padStart(2, '0')}`
+  return { key, label: new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' }) }
+}
+
+function UsageTrendChart({ title, subtitle, series, formatValue }) {
+  const width = 760
+  const height = 300
+  const inset = { top: 18, right: 18, bottom: 34, left: 54 }
+  const plotWidth = width - inset.left - inset.right
+  const plotHeight = height - inset.top - inset.bottom
+  const visibleSeries = series.filter((item) => item.visible !== false)
+  const pointCount = Math.max(0, ...visibleSeries.map((item) => item.points.length))
+  const maximum = Math.max(0, ...visibleSeries.flatMap((item) => item.points.map((point) => Number.isFinite(point.value) ? point.value : 0)))
+  const labelIndexes = pointCount <= 8
+    ? Array.from({ length: pointCount }, (_, index) => index)
+    : [...new Set([0, Math.round((pointCount - 1) / 3), Math.round((pointCount - 1) * 2 / 3), pointCount - 1])]
+  return (
+    <article className="panel trend-chart-panel">
+      <div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div></div>
+      <div className="trend-legend" aria-label="Usage series">
+        {visibleSeries.map((item) => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}
+      </div>
+      {pointCount ? (
+        <div className="trend-chart-scroll">
+          <svg aria-label={title} className="trend-line-chart" role="img" viewBox={`0 0 ${width} ${height}`}>
+            {Array.from({ length: 5 }, (_, index) => {
+              const y = inset.top + plotHeight * index / 4
+              const value = maximum * (4 - index) / 4
+              return <g key={index}><line className="trend-grid-line" x1={inset.left} x2={width - inset.right} y1={y} y2={y} /><text className="trend-axis-label" textAnchor="end" x={inset.left - 8} y={y + 4}>{formatValue(value)}</text></g>
+            })}
+            {visibleSeries.map((item) => {
+              const validPoints = item.points.flatMap((point, index) => Number.isFinite(point.value) ? [{
+                ...point,
+                x: inset.left + (pointCount < 2 ? plotWidth / 2 : index / (pointCount - 1) * plotWidth),
+                y: inset.top + plotHeight - (maximum ? point.value / maximum : 0) * plotHeight,
+              }] : [])
+              const path = validPoints.map((point, index) => `${index ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
+              return <g key={item.key}><path d={path} fill="none" stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />{validPoints.map((point) => <circle cx={point.x} cy={point.y} fill={item.color} key={point.key} r="4"><title>{`${item.label} · ${point.label}: ${formatValue(point.value)}`}</title></circle>)}</g>
+            })}
+            {labelIndexes.map((index) => {
+              const item = series.find((entry) => entry.points[index])
+              const point = item?.points[index]
+              if (!point) return null
+              const x = inset.left + (pointCount < 2 ? plotWidth / 2 : index / (pointCount - 1) * plotWidth)
+              return <text className="trend-axis-label" key={`${point.key}-${index}`} textAnchor={index === 0 ? 'start' : index === pointCount - 1 ? 'end' : 'middle'} x={x} y={height - 7}>{point.label}</text>
+            })}
+          </svg>
+        </div>
+      ) : <div className="chart-empty">No dated quotations match these filters.</div>}
+    </article>
+  )
+}
 
 function Icon({ name, size = 18 }) {
   const paths = {
@@ -542,6 +632,8 @@ function AppShell() {
   const location = useLocation()
   const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false)
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
+  const [trendInterval, setTrendInterval] = useState('month')
+  const [trendUsageSelection, setTrendUsageSelection] = useState(['CONFIGURATOR', 'MANUAL'])
   const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
   const [rawDataRows, setRawDataRows] = useState([])
   const [rawDataColumns, setRawDataColumns] = useState([])
@@ -877,8 +969,106 @@ function AppShell() {
     return [...groups.values()]
   }, [filteredRows, groupBy])
 
+  const trendRows = useMemo(() => {
+    const grouped = new Map()
+    for (const row of filteredRows) {
+      const bucket = getTrendBucket(row.date, trendInterval === 'custom' ? 'day' : trendInterval)
+      if (!bucket) continue
+      const point = grouped.get(bucket.key) ?? {
+        ...bucket,
+        CONFIGURATOR: { count: 0, inr: 0, convertedCount: 0 },
+        MANUAL: { count: 0, inr: 0, convertedCount: 0 },
+      }
+      const usage = row.usage === 'CONFIGURATOR' ? 'CONFIGURATOR' : 'MANUAL'
+      point[usage].count += 1
+      if (row.inr != null) {
+        point[usage].inr += row.inr
+        point[usage].convertedCount += 1
+      }
+      grouped.set(bucket.key, point)
+    }
+    return [...grouped.values()].sort((left, right) => left.key.localeCompare(right.key))
+  }, [filteredRows, trendInterval])
+  const trendSeries = useMemo(() => [
+    {
+      key: 'CONFIGURATOR',
+      label: 'Config',
+      color: '#3455a6',
+      visible: trendUsageSelection.includes('CONFIGURATOR'),
+      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.CONFIGURATOR.count })),
+    },
+    {
+      key: 'MANUAL',
+      label: 'Manual',
+      color: '#ba6037',
+      visible: trendUsageSelection.includes('MANUAL'),
+      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.count })),
+    },
+  ], [trendRows, trendUsageSelection])
+  const trendValueSeries = useMemo(() => [
+    {
+      key: 'CONFIGURATOR',
+      label: 'Config',
+      color: '#3455a6',
+      visible: trendUsageSelection.includes('CONFIGURATOR'),
+      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.CONFIGURATOR.convertedCount ? point.CONFIGURATOR.inr : Number.NaN })),
+    },
+    {
+      key: 'MANUAL',
+      label: 'Manual',
+      color: '#ba6037',
+      visible: trendUsageSelection.includes('MANUAL'),
+      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.convertedCount ? point.MANUAL.inr : Number.NaN })),
+    },
+  ], [trendRows, trendUsageSelection])
+  const trendInsights = useMemo(() => {
+    const totals = trendRows.reduce((result, point) => {
+      for (const usage of ['CONFIGURATOR', 'MANUAL']) {
+        result[usage].count += point[usage].count
+        result[usage].inr += point[usage].inr
+        result[usage].convertedCount += point[usage].convertedCount
+      }
+      return result
+    }, {
+      CONFIGURATOR: { count: 0, inr: 0, convertedCount: 0 },
+      MANUAL: { count: 0, inr: 0, convertedCount: 0 },
+    })
+    const total = totals.CONFIGURATOR.count + totals.MANUAL.count
+    const configShare = total ? totals.CONFIGURATOR.count / total * 100 : 0
+    const valueShare = totals.CONFIGURATOR.inr + totals.MANUAL.inr
+      ? totals.CONFIGURATOR.inr / (totals.CONFIGURATOR.inr + totals.MANUAL.inr) * 100
+      : null
+    return {
+      configShare,
+      valueShare,
+      countDifference: totals.CONFIGURATOR.count - totals.MANUAL.count,
+      config: totals.CONFIGURATOR,
+      manual: totals.MANUAL,
+    }
+  }, [trendRows])
+  const trendIntervalLabel = trendInterval === 'custom'
+    ? `Custom range (${dateFrom ? formatDateLabel(dateFrom) : 'start'}${dateTo ? ` – ${formatDateLabel(dateTo)}` : ''})`
+    : TREND_INTERVALS.find((item) => item.key === trendInterval)?.label ?? 'Monthly'
+
   const countTotal = chartEntries.reduce((sum, entry) => sum + entry.count, 0)
   const inrTotal = chartEntries.reduce((sum, entry) => sum + entry.inr, 0)
+  const dominantCountGroup = [...chartEntries].sort((left, right) => right.count - left.count)[0]
+  const dominantValueGroup = [...chartEntries].sort((left, right) => Math.abs(right.inr) - Math.abs(left.inr))[0]
+  const conversionCoverage = kpis.quotations ? kpis.convertedCount / kpis.quotations * 100 : 0
+  const quotationDecisionHelpers = groupBy === 'trend'
+    ? [
+      `Config is ${trendInsights.configShare.toFixed(1)}% of dated filtered quotation volume (${formatCount(trendInsights.config.count)} of ${formatCount(trendInsights.config.count + trendInsights.manual.count)}). Review whether the mix matches the team’s adoption target.`,
+      `${formatCount(kpis.convertedCount)} of ${formatCount(kpis.quotations)} quotations (${conversionCoverage.toFixed(1)}%) contribute to converted INR trends; investigate unconverted currencies before comparing value trends.`,
+    ]
+    : [
+      ...(dominantCountGroup
+        ? [`${dominantCountGroup.label} has the highest volume: ${formatCount(dominantCountGroup.count)} quotations (${countTotal ? (dominantCountGroup.count / countTotal * 100).toFixed(1) : '0.0'}%). Use it as the first segment to review.`]
+        : []),
+      ...(dominantValueGroup
+        ? [`${dominantValueGroup.label} has the highest converted INR value (${formatMoney(dominantValueGroup.inr, 'INR')}); verify the conversion rate and underlying documents before acting.`]
+        : []),
+      `${formatCount(kpis.convertedCount)} of ${formatCount(kpis.quotations)} quotations (${conversionCoverage.toFixed(1)}%) contribute to the INR total. Resolve unconverted currencies before using value rankings for decisions.`,
+    ]
 
   async function handleFiles(fileList) {
     const file = fileList?.[0]
@@ -925,6 +1115,7 @@ function AppShell() {
         usages: [...new Set(imported.rows.map((row) => row.usage))],
         currencies: [...new Set(imported.rows.map((row) => row.currency))],
       })
+      setTrendUsageSelection(['CONFIGURATOR', 'MANUAL'])
       setDateFrom(importedBounds.min)
       setDateTo(importedBounds.min === importedBounds.max ? '' : importedBounds.max)
       setFileInfo({
@@ -964,6 +1155,7 @@ function AppShell() {
     setQuery('')
     setTableFilters({})
     setOutlierFilter('all')
+    setTrendUsageSelection(['CONFIGURATOR', 'MANUAL'])
   }
 
   function downloadCsv() {
@@ -1190,16 +1382,10 @@ function AppShell() {
                       <div className="floating-stat stat-one"><span className="stat-dot blue" /> Workbook <strong>SAP</strong></div>
                       <div className="floating-stat stat-two"><span className="stat-dot green" /> Reports <strong>Auto-detected</strong></div>
                     </div>
-                    <button
-                      className="drop-target"
-                      disabled={isReading}
-                      onClick={() => inputRef.current?.click()}
-                      type="button"
-                    >
+                    <div className="drop-target">
                       <span className="drop-icon"><Icon name="file" size={20} /></span>
-                      <span><strong>Drop your workbook here</strong><small>or browse files on your device</small></span>
-                      <Icon name="arrow" size={16} />
-                    </button>
+                      <span><strong>Drop your workbook here</strong><small>Use the Upload workbook button above to browse</small></span>
+                    </div>
                     <div className="requirements">
                       <span>Supported workbook types · detected automatically</span>
                       <div className="workbook-requirement-list">
@@ -1252,6 +1438,7 @@ function AppShell() {
                           key={report.id}
                           onClick={() => {
                             setGroupBy(report.groupBy)
+                            if (report.id === 'trend') setTrendInterval('month')
                             navigate('/dashboard')
                           }}
                           type="button"
@@ -1265,11 +1452,21 @@ function AppShell() {
                             <span>{report.description}</span>
                           </span>
                           <span className="report-card-meta">
-                            {report.id === 'overview'
+                            {report.id === 'trend'
+                              ? `${formatCount(rows.filter((row) => row.date).length)} dated quotations · Config vs Manual`
+                              : report.id === 'overview'
                               ? `${formatCount(options.organizations.length)} organizations · ${formatCount(options.currencies.length)} currencies`
                               : report.id === 'usage'
                                 ? `${formatCount(options.usages.length)} usage groups · ${formatCount(rows.length)} quotations`
                                 : `${formatCount(options.currencies.length)} currencies · ${formatCount(rows.length)} quotations`}
+                          </span>
+                          <span className="report-required-columns">
+                            <strong>Required columns</strong>
+                            {report.id === 'overview'
+                              ? 'Sales Organization, Usage group, Currency, Net Value (Header)'
+                              : report.id === 'usage'
+                                ? 'Usage group, Sales Organization, Currency, Net Value (Header)'
+                                : 'Currency, Net Value (Header), Sales Organization'}
                           </span>
                           <span className="report-card-action">
                             Open report <Icon name="arrow" size={16} />
@@ -1312,14 +1509,18 @@ function AppShell() {
               <div>
                 <div className="eyebrow">
                   <span className="eyebrow-line" />
-                  {groupBy === 'usage'
+                  {groupBy === 'trend'
+                    ? 'TIME SERIES'
+                    : groupBy === 'usage'
                     ? 'USAGE ANALYSIS'
                     : groupBy === 'currency'
                       ? 'CURRENCY ANALYSIS'
                       : 'SALES OVERVIEW'}
                 </div>
                 <h1>
-                  {groupBy === 'usage'
+                  {groupBy === 'trend'
+                    ? 'Quotation trend analysis'
+                    : groupBy === 'usage'
                     ? 'Config Usage Dashboard'
                     : groupBy === 'currency'
                       ? 'Currency breakdown'
@@ -1343,7 +1544,7 @@ function AppShell() {
                         : 'All available dates'}
                   </span>
                   <span>Sales organization: {summarizeSelectedValues(selections.organizations, options.organizations)}</span>
-                  <span>Usage group: {summarizeSelectedValues(selections.usages, options.usages)}</span>
+                  <span>{groupBy === 'trend' ? 'Compare usage: ' : 'Usage group: '}{summarizeSelectedValues(selections.usages, options.usages)}</span>
                   <span>Currency: {summarizeSelectedValues(selections.currencies, options.currencies)}</span>
                   <span>
                     Outlier filter: {({
@@ -1369,6 +1570,89 @@ function AppShell() {
                 <ReportExportMenu
                   onExportCsv={downloadCsv}
                   onExportExcel={downloadExcel}
+                  onExportHtml={() => exportReportsToHtml({
+                    title: groupBy === 'trend' ? 'Quotation trend analysis' : groupBy === 'usage' ? 'Config Usage Dashboard' : groupBy === 'currency' ? 'Currency breakdown' : 'Quotation overview',
+                    subtitle: `${fileInfo?.name || 'Quotation workbook'} · ${filteredRows.length.toLocaleString('en-IN')} quotations matching the current filters.`,
+                    fileName: 'quotation-report',
+                    dashboard: {
+                      reportTitle: groupBy === 'trend' ? 'Quotation trend analysis' : groupBy === 'usage' ? 'Config Usage Dashboard' : groupBy === 'currency' ? 'Currency breakdown' : 'Quotation overview',
+                      category: 'Quotation analysis',
+                      number: REPORT_CARDS.findIndex((item) => item.groupBy === groupBy) + 1,
+                      filters: [
+                        `Date range: ${dateFrom ? `${formatDateLabel(dateFrom)}${dateTo ? ` — ${formatDateLabel(dateTo)}` : ' (single day)'}` : dateTo ? `Through ${formatDateLabel(dateTo)}` : 'All available dates'}`,
+                        `Sales organization: ${summarizeSelectedValues(selections.organizations, options.organizations)}`,
+                        `${groupBy === 'trend' ? 'Compare usage' : 'Usage group'}: ${groupBy === 'trend' ? trendUsageSelection.map((usage) => usage === 'CONFIGURATOR' ? 'Config' : 'Manual').join(', ') || 'None' : summarizeSelectedValues(selections.usages, options.usages)}`,
+                        `Currency: ${summarizeSelectedValues(selections.currencies, options.currencies)}`,
+                        `Outlier filter: ${{ all: 'Include all values', zero: 'Exclude zero-value quotations', iqr: 'Exclude 1.5 IQR outliers', mad: 'Exclude Modified Z-Score (MAD) outliers', percentile: `Percentile range (${percentileTail}%–${100 - percentileTail}%)` }[outlierFilter]}`,
+                      ],
+                      kpis: [
+                        { label: 'Quotations', value: formatCount(kpis.quotations), description: 'Unique SAP sales documents' },
+                        { label: 'Total value · INR', value: formatMoney(kpis.totalInr, 'INR'), description: `${formatCount(kpis.convertedCount)} converted${kpis.currencies.length ? ` · not converted: ${kpis.currencies.join(', ')}` : ''}` },
+                        { label: 'Sales organizations', value: formatCount(kpis.organizations), description: 'Distinct organizations in selection' },
+                      ],
+                      quotationCharts: groupBy === 'trend' ? null : {
+                        dimension: CHART_GROUPS.find((group) => group.key === groupBy)?.label,
+                        countTotal: formatCount(countTotal),
+                        valueTotal: formatMoney(inrTotal, 'INR'),
+                        entries: chartEntries.map((entry) => ({
+                          label: entry.label,
+                          count: entry.count,
+                          value: entry.inr,
+                          countLabel: formatCount(entry.count),
+                          valueLabel: formatMoney(entry.inr, 'INR'),
+                        })),
+                      },
+                      trendCharts: groupBy === 'trend' ? {
+                        interval: trendIntervalLabel,
+                        series: trendSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: formatCount(point.value) })) })),
+                        valueSeries: trendValueSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: Number.isFinite(point.value) ? formatMoney(point.value, 'INR') : 'No converted data' })) })),
+                        insights: [
+                          `Config share of quotations: ${trendInsights.configShare.toFixed(1)}% (${formatCount(trendInsights.config.count)} Config and ${formatCount(trendInsights.manual.count)} Manual).`,
+                          `Config share of converted INR value: ${trendInsights.valueShare == null ? 'unavailable' : `${trendInsights.valueShare.toFixed(1)}%`}.`,
+                          `Volume difference: ${trendInsights.countDifference > 0 ? '+' : ''}${formatCount(trendInsights.countDifference)} Config minus Manual.`,
+                        ],
+                      } : null,
+                      insights: groupBy === 'trend'
+                        ? []
+                        : [
+                          `${formatCount(kpis.quotations)} quotations match the active filters; ${formatCount(kpis.organizations)} sales organizations are represented.`,
+                          `${formatCount(kpis.convertedCount)} quotations (${conversionCoverage.toFixed(1)}%) have a configured INR conversion.`,
+                          ...(dominantCountGroup ? [`Largest volume group: ${dominantCountGroup.label}, ${formatCount(dominantCountGroup.count)} quotations.`] : []),
+                          ...(dominantValueGroup ? [`Largest converted value group: ${dominantValueGroup.label}, ${formatMoney(dominantValueGroup.inr, 'INR')}.`] : []),
+                        ],
+                      decisionHelpers: quotationDecisionHelpers,
+                      tableTitle: groupBy === 'trend' ? 'Trend data' : 'Original-currency breakdown',
+                      tableDescription: groupBy === 'trend'
+                        ? `${trendRows.length.toLocaleString('en-IN')} ${trendIntervalLabel.toLowerCase()} brackets · Config and Manual compared side by side`
+                        : `${tableRows.length.toLocaleString('en-IN')} rows · totals are separated by currency.`,
+                      rows: groupBy === 'trend' ? trendRows : tableRows,
+                      snapshot: {
+                        type: 'quotations',
+                        rows,
+                        selections,
+                        dateFrom,
+                        dateTo,
+                        groupBy,
+                        outlierFilter,
+                        percentileTail,
+                        trendInterval,
+                        trendUsageSelection,
+                        options,
+                      },
+                      columns: groupBy === 'trend' ? [
+                        { label: 'Time bracket', getValue: (row) => row.label },
+                        { label: 'Config quotations', getValue: (row) => formatCount(row.CONFIGURATOR.count) },
+                        { label: 'Manual quotations', getValue: (row) => formatCount(row.MANUAL.count) },
+                        { label: 'Config value (INR)', getValue: (row) => row.CONFIGURATOR.convertedCount ? formatMoney(row.CONFIGURATOR.inr, 'INR') : '—' },
+                        { label: 'Manual value (INR)', getValue: (row) => row.MANUAL.convertedCount ? formatMoney(row.MANUAL.inr, 'INR') : '—' },
+                      ] : SUMMARY_EXPORT_COLUMNS.map(([label, getValue]) => ({
+                        label,
+                        getValue: (row) => label === 'Total value (original currency)' ? formatExactMoney(getValue(row), row.currency) : getValue(row),
+                      })),
+                      rowLink: groupBy === 'trend' ? null : (row) => `${window.location.origin}/dashboard?groupBy=${encodeURIComponent(groupBy)}#${encodeURIComponent(row.salesOrganization || row.usage || row.currency || '')}`,
+                      metrics: [],
+                    },
+                  })}
                   onPreview={() => setIsPrintPreviewOpen(true)}
                 />
                 <button
@@ -1460,7 +1744,7 @@ function AppShell() {
                     />
                   </span>
                 </label>
-                {FILTERS.map((filter) => (
+                {FILTERS.filter((filter) => groupBy !== 'trend' || filter.key !== 'usages').map((filter) => (
                   <MultiSelect
                     key={filter.key}
                     label={filter.label}
@@ -1471,6 +1755,22 @@ function AppShell() {
                     selected={selections[filter.key]}
                   />
                 ))}
+                {groupBy === 'trend' && (
+                  <MultiSelect
+                    label="Compare usage"
+                    onChange={(values) => setTrendUsageSelection(values)}
+                    options={['CONFIGURATOR', 'MANUAL'].filter((usage) => options.usages.includes(usage))}
+                    selected={trendUsageSelection.filter((usage) => options.usages.includes(usage))}
+                  />
+                )}
+                {groupBy === 'trend' && (
+                  <label className="outlier-filter trend-interval-control">
+                    <span>Time bracket</span>
+                    <select onChange={(event) => setTrendInterval(event.target.value)} value={trendInterval}>
+                      {TREND_INTERVALS.map((interval) => <option key={interval.key} value={interval.key}>{interval.label}</option>)}
+                    </select>
+                  </label>
+                )}
                 <label className="outlier-filter">
                   <span>Outlier filter</span>
                   <select
@@ -1560,7 +1860,51 @@ function AppShell() {
               </article>
             </section>
 
-            <section className="charts-section">
+            {groupBy === 'trend' ? (
+              <>
+                <section aria-label="Quotation trends" className="charts-section trend-section">
+                  <div className="section-heading">
+                    <div><h2>Quotation activity over time</h2><p>{trendIntervalLabel} totals for the active report filters</p></div>
+                    <span className="result-pill">{formatCount(trendRows.length)} time brackets</span>
+                  </div>
+                  <div className="trend-chart-grid">
+                    <UsageTrendChart
+                      formatValue={(value) => formatCount(value)}
+                      series={trendSeries}
+                      title="Quotation volume"
+                      subtitle="Compare Config and Manual quotations in each time bracket"
+                    />
+                    <UsageTrendChart
+                      formatValue={(value) => formatMoney(value, 'INR')}
+                      series={trendValueSeries}
+                      title="Converted quotation value"
+                      subtitle="Compare converted INR value for Config and Manual quotations"
+                    />
+                  </div>
+                </section>
+                <section className="trend-insights-grid" aria-label="Config and Manual insights">
+                  <article className="panel trend-insight-card"><span>Config share of quotations</span><strong>{trendInsights.configShare.toFixed(1)}%</strong><small>{formatCount(trendInsights.config.count)} Config · {formatCount(trendInsights.manual.count)} Manual</small></article>
+                  <article className="panel trend-insight-card"><span>Config share of converted value</span><strong>{trendInsights.valueShare == null ? '—' : `${trendInsights.valueShare.toFixed(1)}%`}</strong><small>{trendInsights.config.convertedCount ? formatMoney(trendInsights.config.inr, 'INR') : 'No Config conversions'} · {trendInsights.manual.convertedCount ? formatMoney(trendInsights.manual.inr, 'INR') : 'No Manual conversions'}</small></article>
+                  <article className="panel trend-insight-card"><span>Volume difference</span><strong>{trendInsights.countDifference > 0 ? '+' : ''}{formatCount(trendInsights.countDifference)}</strong><small>Config minus Manual across the selected time range</small></article>
+                </section>
+                <section className="panel table-panel trend-table-panel">
+                  <div className="table-heading">
+                    <div><h2>Trend data</h2><p>One row per {TREND_INTERVALS.find((item) => item.key === trendInterval)?.label.toLowerCase()} bracket</p></div>
+                    <span className="result-pill">{formatCount(trendRows.length)} brackets</span>
+                  </div>
+                  <div className="table-scroll">
+                    <table>
+                      <thead><tr><th>Time bracket</th><th className="align-right">Config quotations</th><th className="align-right">Manual quotations</th><th className="align-right">Config value (INR)</th><th className="align-right">Manual value (INR)</th></tr></thead>
+                      <tbody>
+                        {trendRows.map((point) => <tr key={point.key}><td>{point.label}</td><td className="align-right">{formatCount(point.CONFIGURATOR.count)}</td><td className="align-right">{formatCount(point.MANUAL.count)}</td><td className="align-right">{point.CONFIGURATOR.convertedCount ? formatMoney(point.CONFIGURATOR.inr, 'INR') : '—'}</td><td className="align-right">{point.MANUAL.convertedCount ? formatMoney(point.MANUAL.inr, 'INR') : '—'}</td></tr>)}
+                        {!trendRows.length && <tr><td className="empty-table" colSpan="5">No dated quotations match these filters.</td></tr>}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="table-footer"><span><i className="footer-dot" /> Date brackets use the selected calendar interval</span><span>{formatCount(filteredRows.length)} quotations in view</span></div>
+                </section>
+              </>
+            ) : <section className="charts-section">
               <div className="section-heading">
                 <div><h2>Performance breakdown</h2><p>Quotation volume and converted value across your selection</p></div>
                 <div className="chart-controls">
@@ -1600,9 +1944,9 @@ function AppShell() {
                   total={inrTotal}
                 />
               </div>
-            </section>
+            </section>}
 
-            <section className="panel table-panel">
+            {groupBy !== 'trend' && <section className="panel table-panel">
               <div className="table-heading">
                 <div><h2>Original-currency breakdown</h2><p>Totals stay separated by currency · exact values shown on hover</p></div>
                 <div className="table-tools">
@@ -1680,7 +2024,39 @@ function AppShell() {
                 <span><i className="footer-dot" /> One row per Sales document · repeated item lines excluded</span>
                 <span>INR amounts shown in Lacs / Cr <b>ⓘ</b></span>
               </div>
-            </section>
+            </section>}
+            <ReportInsightsSummary
+              chartRules={groupBy === 'trend'
+                ? [
+                  `The trend charts use ${trendIntervalLabel.toLowerCase()} date buckets and compare Config with Manual quotations.`,
+                  'Quotation volume counts unique sales documents; value charts sum only rows with a configured INR conversion.',
+                  'Config share and volume difference use the filtered time-series totals; value share uses converted INR totals only.',
+                  'For more than 8 time buckets, the line chart labels 4 dates while retaining every plotted point. Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
+                ]
+                : [
+                  `Charts group the filtered quotations by ${CHART_GROUPS.find((group) => group.key === groupBy)?.label ?? groupBy}.`,
+                  'Count charts show unique sales documents; value charts show converted INR amounts and omit unconverted currencies.',
+                  'Pie percentages use the visible chart total as their denominator; the currency table keeps original-currency totals separate.',
+                  'Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
+                ]}
+              insights={groupBy === 'trend'
+                ? [
+                  `Config represents ${trendInsights.configShare.toFixed(1)}% of filtered quotations (${formatCount(trendInsights.config.count)} Config and ${formatCount(trendInsights.manual.count)} Manual).`,
+                  `Config minus Manual volume: ${trendInsights.countDifference > 0 ? '+' : ''}${formatCount(trendInsights.countDifference)} quotations.`,
+                  `Config share of converted value: ${trendInsights.valueShare == null ? 'unavailable' : `${trendInsights.valueShare.toFixed(1)}%`}.`,
+                ]
+                : [
+                  `${formatCount(kpis.quotations)} unique quotations match the active filters.`,
+                  `${formatCount(kpis.convertedCount)} quotations contribute to the INR total; currencies without a configured rate are excluded from that total.`,
+                  `${formatCount(kpis.organizations)} distinct sales organizations are represented.`,
+                ]}
+              decisionHelpers={quotationDecisionHelpers}
+              kpis={[
+                { label: 'Quotations', definition: 'Count of unique SAP sales documents after the active date, organization, usage, currency, and outlier filters.' },
+                { label: 'Total value · INR', definition: 'Sum of net header values converted to INR using configured rates; unconverted currencies are excluded and listed on the KPI.' },
+                { label: 'Sales organizations', definition: 'Distinct sales organizations among the filtered quotations.' },
+              ]}
+            />
                   </>
                 ) : (
                   <Navigate to="/" replace />

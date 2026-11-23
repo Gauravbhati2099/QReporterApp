@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 const initialSelections = () => ({
   organizations: [],
@@ -20,7 +21,9 @@ const createFieldSetter = (set, field) => (value) =>
     [field]: typeof value === 'function' ? value(state[field]) : value,
   }))
 
-export const useAppStore = create((set) => ({
+const QUOTATION_REPORTS = new Set(['salesOrganization', 'usage', 'currency', 'trend'])
+
+export const useAppStore = create(persist((set) => ({
   isRestoring: true,
   rows: [],
   datasetType: 'quotation',
@@ -66,4 +69,14 @@ export const useAppStore = create((set) => ({
   setIsReading: createFieldSetter(set, 'isReading'),
   setDragging: createFieldSetter(set, 'dragging'),
   setIsPresenting: createFieldSetter(set, 'isPresenting'),
+}), {
+  name: 'qreport-dashboard-state',
+  version: 1,
+  partialize: (state) => ({ groupBy: state.groupBy }),
+  merge: (persistedState, currentState) => ({
+    ...currentState,
+    groupBy: QUOTATION_REPORTS.has(persistedState?.groupBy)
+      ? persistedState.groupBy
+      : currentState.groupBy,
+  }),
 }))
