@@ -42,5 +42,6 @@ function offlineShellPlugin() {
 }
 
 export default defineConfig({
+  base: '/',
   plugins: [react(), offlineShellPlugin()],
 })

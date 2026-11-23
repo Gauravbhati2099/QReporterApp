@@ -1,6 +1,7 @@
 const CACHE_NAME = '__CACHE_NAME__'
 const PRECACHE_URLS = /*__PRECACHE_URLS__*/ []
 const CACHE_PREFIX = 'qreport-shell-'
+const APP_SHELL_URL = `${self.registration.scope}index.html`
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -35,12 +36,19 @@ self.addEventListener('fetch', (event) => {
       if (request.mode === 'navigate') {
         try {
           const response = await fetch(request)
-          if (response.ok) await cache.put(request, response.clone())
-          return response
+          if (response.ok) {
+            await cache.put(request, response.clone())
+            return response
+          }
+
+          return (
+            (await cache.match(APP_SHELL_URL, { ignoreVary: true })) ??
+            Response.error()
+          )
         } catch {
           return (
             (await cache.match(request, { ignoreVary: true })) ??
-            (await cache.match(`${self.registration.scope}index.html`, { ignoreVary: true })) ??
+            (await cache.match(APP_SHELL_URL, { ignoreVary: true })) ??
             Response.error()
           )
         }
