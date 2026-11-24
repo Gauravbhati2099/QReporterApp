@@ -7,14 +7,22 @@ import {
   PROCUREMENT_REPORTS,
 } from './lib/procurementReports'
 import { formatCount } from './lib/reportData'
+import { getChartColor } from './lib/chartColors'
 import { exportReportsToHtml, exportRowsToExcel } from './lib/reportExport'
 import ReportExportMenu from './ReportExportMenu'
 import ReportInsightsSummary from './ReportInsightsSummary'
+import ReportNavigation from './ReportNavigation'
 
 function getAvailableFilters(report, fields) {
   return PROCUREMENT_FILTERS.filter(
     ([field]) => report.filterFields.includes(field) && fields.has(field),
   )
+}
+
+function validDaysForRow(row) {
+  const start = Date.parse(`${row.miroPostingDate ?? ''}T00:00:00Z`)
+  const end = Date.parse(`${row.clearingDate ?? ''}T00:00:00Z`)
+  return Boolean(row.miroPostingDate && row.clearingDate && Number.isFinite(start) && Number.isFinite(end) && end >= start)
 }
 
 function getFilterOptions(rows, field) {
@@ -197,16 +205,6 @@ function getReportDisplayColumns(report, columns) {
   return distinct.slice(0, 20)
 }
 
-function matchesSearch(row, columns, search) {
-  if (!search) return true
-  const lower = search.toLowerCase()
-  return columns.some((column) =>
-    String(row[column.field] ?? row.sourceValues?.[column.sourceIndex] ?? '')
-      .toLowerCase()
-      .includes(lower),
-  )
-}
-
 function getMetricValue(row, metric) {
   if (metric.key === 'gst') {
     return ['miroCgst', 'miroSgst', 'miroUgst', 'miroIgst']
@@ -361,6 +359,18 @@ function getReportLevelLabel(report) {
     return 'group summary level'
   }
   return `${report.transaction.toUpperCase()} document level`
+}
+
+function getReportTableTitle(report) {
+  const titles = {
+    'procurement-overview': 'Purchase order items',
+    'supplier-performance': 'Supplier performance records',
+    'order-fulfillment': 'PO and receipt items',
+    'invoice-tax': 'Invoice and tax records',
+    'data-quality': 'Data quality exceptions',
+    'tat-analysis': 'Turnaround stage intervals',
+  }
+  return titles[report.id] ?? `${report.title} details`
 }
 
 function getReportInsights(report, rows, fields) {
@@ -598,13 +608,13 @@ function ProcurementBarChart({ title, subtitle, entries, metric }) {
                 <div className="bar-entry" key={entry.label}>
                   <div className="bar-meta">
                     <span className="bar-label" title={entry.label}>
-                      <i className={`legend-dot tone-${index}`} />
+                      <i className="legend-dot" style={{ backgroundColor: getChartColor(index) }} />
                       {entry.label}
                     </span>
                     <span className="bar-number">{formatMetric(entry.value, metric, currency)}</span>
                   </div>
                   <div className="bar-track" role="img" aria-label={`${entry.label}: ${formatMetric(entry.value, metric, currency)}`}>
-                    <span className={`bar-fill tone-${index}`} style={{ width: `${maximum ? Math.max(2, Math.abs(entry.value) / maximum * 100) : 0}%` }} />
+                    <span className="bar-fill" style={{ width: `${maximum ? Math.max(2, Math.abs(entry.value) / maximum * 100) : 0}%`, backgroundColor: getChartColor(index) }} />
                   </div>
                 </div>
               ))}
@@ -619,8 +629,6 @@ function ProcurementBarChart({ title, subtitle, entries, metric }) {
     </section>
   )
 }
-
-const PROCUREMENT_PIE_COLORS = ['#4169e1', '#159777', '#7759cc', '#df8b36', '#d65773', '#398da8', '#78869c']
 
 function getProcurementPieSlices(entries) {
   const total = entries.reduce((sum, entry) => sum + Math.abs(entry.value), 0)
@@ -686,7 +694,7 @@ function ProcurementPieChart({ entries, metric, dimension }) {
                       className="pie-slice"
                       d={slice.path}
                       key={slice.label}
-                      style={{ '--pie-color': PROCUREMENT_PIE_COLORS[index % PROCUREMENT_PIE_COLORS.length] }}
+                      style={{ '--pie-color': getChartColor(index) }}
                     >
                       <title>{`${slice.label}: ${(slice.share * 100).toFixed(1)}%`}</title>
                     </path>
@@ -702,7 +710,7 @@ function ProcurementPieChart({ entries, metric, dimension }) {
                       <i
                         aria-hidden="true"
                         className="pie-legend-dot"
-                        style={{ '--pie-color': PROCUREMENT_PIE_COLORS[index % PROCUREMENT_PIE_COLORS.length] }}
+                        style={{ '--pie-color': getChartColor(index) }}
                       />
                       <span className="pie-legend-label" title={slice.label}>{slice.label}</span>
                       <span className="pie-legend-value">
@@ -781,7 +789,7 @@ function ProcurementTatStageFlow({ rows }) {
   )
 }
 
-export function ProcurementReportDashboard({ report, summaryTables, columns, navigate, fileName, isPresenting, onPreviewPrint, onTogglePresentation }) {
+export function ProcurementReportDashboard({ report, reportList, summaryTables, columns, navigate, fileName, isPresenting, onPreviewPrint, onTogglePresentation }) {
   const rows = useMemo(
     () => summaryTables?.[report.summaryTable] ?? [],
     [report.summaryTable, summaryTables],
@@ -812,13 +820,11 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
   const [dateTo, setDateTo] = useState(null)
   const selectedDateFrom = dateFrom ?? dateBounds.min
   const selectedDateTo = dateTo ?? dateBounds.max
-  const [search, setSearch] = useState('')
-  const [tableFilters, setTableFilters] = useState({})
-  const [sort, setSort] = useState({ field: '', direction: 'asc' })
+  const [sort, setSort] = useState({ field: displayColumns?.[0]?.field ?? '', direction: 'asc' })
   const [linkedRowKey, setLinkedRowKey] = useState('')
   const [chartDimension, setChartDimension] = useState(report.dimension)
   const [chartMetric, setChartMetric] = useState(report.metric)
-  const [page, setPage] = useState(0)
+  const [visibleTableCount, setVisibleTableCount] = useState(50)
   const availableMetrics = useMemo(
     () => getMetricChoices(report, fieldSet, rows),
     [fieldSet, report, rows],
@@ -885,20 +891,11 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
     [columns, report],
   )
   const metricRows = sourceRows
-  const tableRows = useMemo(
-    () => metricRows.filter((row) => displayColumns.every((column) =>
-      !tableFilters[column.field] || String(row[column.field] ?? row.sourceValues?.[column.sourceIndex] ?? '') === tableFilters[column.field],
-    )),
-    [displayColumns, metricRows, tableFilters],
-  )
-  const searchedRows = useMemo(
-    () => tableRows.filter((row) => matchesSearch(row, displayColumns, search)),
-    [displayColumns, search, tableRows],
-  )
+  const tableRows = metricRows
   const orderedRows = useMemo(() => {
-    if (!sort.field) return searchedRows
+    if (!sort.field) return tableRows
     const direction = sort.direction === 'asc' ? 1 : -1
-    return [...searchedRows].sort((a, b) => {
+    return [...tableRows].sort((a, b) => {
       const left = a[sort.field] ?? ''
       const right = b[sort.field] ?? ''
       const leftNumber = Number(left)
@@ -909,7 +906,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
           : String(left).localeCompare(String(right), undefined, { numeric: true })
       return result * direction
     })
-  }, [searchedRows, sort])
+  }, [tableRows, sort])
   useEffect(() => {
     const syncLinkedRow = () => setLinkedRowKey(decodeURIComponent(window.location.hash.slice(1)))
     syncLinkedRow()
@@ -922,15 +919,9 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
       [row.poNumber, row.prNumber, row.grnNumber, row.miroNumber, row.invoiceNumber]
         .some((value) => String(value ?? '') === linkedRowKey),
     )
-    if (matchIndex >= 0) setPage(Math.floor(matchIndex / 15))
+    if (matchIndex >= 0) setVisibleTableCount((count) => Math.max(count, matchIndex + 1))
   }, [linkedRowKey, orderedRows])
-  const pageSize = 15
-  const pageCount = Math.max(1, Math.ceil(orderedRows.length / pageSize))
-  const visiblePage = Math.min(page, pageCount - 1)
-  const pageRows = orderedRows.slice(visiblePage * pageSize, (visiblePage + 1) * pageSize)
-  useEffect(() => {
-    if (page !== visiblePage) setPage(visiblePage)
-  }, [page, visiblePage])
+  const visibleRows = orderedRows.slice(0, visibleTableCount)
   const metricKpis = report.metrics
     .filter((metric) => isMetricAvailable(metric, metricFields))
     .filter((metric) => !(report.id === 'procurement-overview' && metric.key === 'poTotal'))
@@ -1116,16 +1107,12 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
   useEffect(() => {
     setChartDimension(report.dimension)
     setChartMetric(report.metric)
-    setPage(0)
-    setSearch('')
-    setTableFilters({})
     setDateFrom(null)
     setDateTo(null)
     setSort({ field: '', direction: 'asc' })
   }, [report.id, report.dimension, report.metric])
 
   function toggleSort(field) {
-    setPage(0)
     setSort((current) => ({
       field,
       direction: current.field === field && current.direction === 'asc' ? 'desc' : 'asc',
@@ -1145,11 +1132,16 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
 
   return (
     <section className="procurement-report-detail">
+      <ReportNavigation
+        activeId={report.id}
+        onSelect={(item) => navigate(`/reports/${item.id}`)}
+        reports={reportList}
+      />
       <header className="page-heading procurement-report-header">
         <div className="procurement-report-title">
           <div className="eyebrow">
             <span className="eyebrow-line" />
-            {report.category} · REPORT {report.number}
+            {report.category} · Report {report.number}
           </div>
           <h1>{report.title}</h1>
           <p className="page-subtitle">
@@ -1224,7 +1216,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
                 },
                 insights,
                 decisionHelpers,
-                tableTitle: 'Report summary table',
+                tableTitle: getReportTableTitle(report),
                 tableDescription: `${orderedRows.length.toLocaleString('en-IN')} rows · ${getReportLevelLabel(report)} · ${printFilterSummary.join(' · ')}`,
                 columns: [
                   ...displayColumns.map((column) => ({
@@ -1272,7 +1264,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
                     })),
                     ...(report.id === 'pending-grn-report' ? [{ label: 'Pending quantity', key: 'pendingQuantity' }] : []),
                   ],
-                  tableTitle: 'Report summary table',
+                  tableTitle: getReportTableTitle(report),
                   tableDescription: `${getReportLevelLabel(report)} · ${printFilterSummary.join(' · ')}`,
                 },
                 rowLink: (row) => {
@@ -1315,7 +1307,6 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
               <select
                 onChange={(event) => {
                   setTatStageFilter(event.target.value)
-                  setPage(0)
                 }}
                 value={tatStageFilter}
               >
@@ -1332,7 +1323,6 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
                 label={label}
                 onChange={(selected) => {
                   setFilters((current) => ({ ...current, [field]: selected }))
-                  setPage(0)
                 }}
                 options={values}
                 selected={filters[field]}
@@ -1344,13 +1334,13 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
               <label className="date-filter">
                 <span>From</span>
                 <span className="date-input">
-                  <input onChange={(event) => { setDateFrom(event.target.value); setPage(0) }} type="date" value={getDateInputValue(selectedDateFrom, 'start')} />
+                  <input onChange={(event) => setDateFrom(event.target.value)} type="date" value={getDateInputValue(selectedDateFrom, 'start')} />
                 </span>
               </label>
               <label className="date-filter">
                 <span>To</span>
                 <span className="date-input">
-                  <input onChange={(event) => { setDateTo(event.target.value); setPage(0) }} type="date" value={getDateInputValue(selectedDateTo, 'end')} />
+                  <input onChange={(event) => setDateTo(event.target.value)} type="date" value={getDateInputValue(selectedDateTo, 'end')} />
                 </span>
               </label>
             </>
@@ -1362,9 +1352,6 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
               setTatStageFilter('')
               setDateFrom(null)
               setDateTo(null)
-              setSearch('')
-              setTableFilters({})
-              setPage(0)
             }}
             type="button"
           >
@@ -1447,21 +1434,9 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
         </div>
       </section>
 
-      <section aria-label="Detailed transaction data" className="panel procurement-table-panel">
-        <div className="procurement-section-heading">
-          <div><h2>Report summary table</h2><p>{formatCount(orderedRows.length)} rows · {getReportLevelLabel(report)}</p></div>
-          <label className="search-box">
-            <input
-              aria-label="Search report rows"
-              onChange={(event) => {
-                setSearch(event.target.value)
-                setPage(0)
-              }}
-              placeholder="Search rows"
-              type="search"
-              value={search}
-            />
-          </label>
+      <section aria-label="Detailed transaction data" className="panel table-panel procurement-table-panel">
+        <div className="procurement-section-heading table-heading">
+          <div><h2>{getReportTableTitle(report)}</h2><p>{formatCount(orderedRows.length)} matching {getReportLevelLabel(report)} records</p></div>
         </div>
         <div className="table-scroll procurement-table-scroll">
           <table>
@@ -1469,32 +1444,17 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
               <tr>
                 {displayColumns.map((column) => (
                   <th className={['poTotal', 'miroValue', 'grnValue', 'poQuantity', 'orderedQuantity', 'receivedQuantity', 'pendingQuantity', 'gst', 'clearingDays', 'tatDays'].includes(column.field) ? 'align-right' : ''} key={`${column.key}-${column.sourceIndex}`}>
-                    <span className="procurement-column-label">
-                      <button className="sort-header" onClick={() => toggleSort(column.field ?? column.key)} type="button">
-                        {column.label}
-                        {sort.field === column.field && <span>{sort.direction === 'asc' ? '↑' : '↓'}</span>}
-                      </button>
-                    </span>
-                    <select
-                      aria-label={`Filter table by ${column.label}`}
-                      onChange={(event) => {
-                        setTableFilters((current) => ({ ...current, [column.field]: event.target.value }))
-                        setPage(0)
-                      }}
-                      value={tableFilters[column.field] ?? ''}
-                    >
-                      <option value="">All</option>
-                      {[...new Set(metricRows.map((row) => String(row[column.field] ?? row.sourceValues?.[column.sourceIndex] ?? '')).filter(Boolean))]
-                        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-                        .map((value) => <option key={value} value={value}>{value}</option>)}
-                    </select>
+                    <button className="sort-header" onClick={() => toggleSort(column.field ?? column.key)} type="button">
+                      {column.label}
+                      {sort.field === (column.field ?? column.key) && <span>{sort.direction === 'asc' ? '↑' : '↓'}</span>}
+                    </button>
                   </th>
                 ))}
-                {report.id === 'pending-grn-report' && <th>Pending quantity</th>}
+                {report.id === 'pending-grn-report' && <th><button className="sort-header" onClick={() => toggleSort('pendingQuantity')} type="button" aria-label={`Sort pending quantity ${sort.field === 'pendingQuantity' && sort.direction === 'asc' ? 'descending' : 'ascending'}`}>Pending quantity{sort.field === 'pendingQuantity' && <span>{sort.direction === 'asc' ? '↑' : '↓'}</span>}</button></th>}
               </tr>
             </thead>
             <tbody>
-              {pageRows.map((row, index) => {
+              {visibleRows.map((row, index) => {
                 const rowKey = [row.poNumber, row.prNumber, row.grnNumber, row.miroNumber, row.invoiceNumber]
                   .find((value) => String(value ?? '') === linkedRowKey)
                 return (
@@ -1507,7 +1467,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
                   {report.id === 'pending-grn-report' && <td>{formatCount(row.pendingQuantity)}</td>}
                 </tr>
               )})}
-              {pageRows.length === 0 && (
+              {visibleRows.length === 0 && (
                 <tr><td className="empty-table" colSpan={displayColumns.length + (report.id === 'pending-grn-report' ? 1 : 0)}>No records match the current filters.</td></tr>
               )}
             </tbody>
@@ -1517,13 +1477,7 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
           <span><i className="footer-dot" /> {getReportLevelLabel(report)} · calculated fields are shown where available</span>
           <span>{formatCount(orderedRows.length)} matching rows</span>
         </div>
-        <div className="procurement-pagination">
-          <span>Page {visiblePage + 1} of {pageCount}</span>
-          <div>
-            <button className="button button-outline" disabled={page === 0} onClick={() => setPage((value) => value - 1)} type="button">Previous</button>
-            <button className="button button-outline" disabled={page + 1 >= pageCount} onClick={() => setPage((value) => value + 1)} type="button">Next</button>
-          </div>
-        </div>
+        {visibleTableCount < orderedRows.length && <div className="procurement-pagination"><span>Showing {formatCount(visibleRows.length)} of {formatCount(orderedRows.length)} rows</span><button className="button button-outline" onClick={() => setVisibleTableCount((count) => count + 50)} type="button">Show 50 more</button></div>}
       </section>
 
       <ReportInsightsSummary
@@ -1554,6 +1508,12 @@ export function ProcurementReportDashboard({ report, summaryTables, columns, nav
           Reconcile movement types, reversals, returns, and document-level keys with your SAP configuration before acting.
         </p>
       </section>}
+      <ReportNavigation
+        activeId={report.id}
+        onSelect={(item) => navigate(`/reports/${item.id}`)}
+        placement="bottom"
+        reports={reportList}
+      />
     </section>
   )
 }

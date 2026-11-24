@@ -34,7 +34,7 @@ const PREVIEW_STYLES = `
     right: 26px;
     bottom: 14px;
     color: #777;
-    font: 10px sans-serif;
+    font: 12px sans-serif;
   }
   .print-preview-page-content {
     width: 1071px;

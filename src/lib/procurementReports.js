@@ -1007,6 +1007,12 @@ function buildTatEvents(rows, grnItems, miroDocuments, sourceFields) {
 
 export function buildProcurementSummaryTables(rows, availableFields) {
   const sourceFields = availableFields ?? new Set(Object.keys(rows[0] ?? {}))
+  const dateBounds = rows.reduce((bounds, row) => {
+    const date = row.date
+    if (date && (!bounds.min || date < bounds.min)) bounds.min = date
+    if (date && (!bounds.max || date > bounds.max)) bounds.max = date
+    return bounds
+  }, { min: '', max: '' })
   const poItems = uniqueTransactionRows(
     rows,
     'po',
@@ -1169,8 +1175,6 @@ export function buildProcurementSummaryTables(rows, availableFields) {
   const duplicateInvoices = [...duplicateInvoicesByNumber.values()].filter((row) => row.duplicateCount > 1)
   const duplicateGrnItems = duplicateSourceRows.filter((row) => row.grnNumber && row.grnItem)
   const duplicatePoItemRows = duplicateSourceRows.filter((row) => row.poNumber && row.poItem)
-  const gstByVendor = groupBy(miroDocuments, 'vendorId', invoiceMetrics)
-  const gstByTax = groupBy(miroDocuments, 'miroTaxCode', invoiceMetrics)
   const vendorPerformanceGroups = new Map()
   const getVendorGroup = (row) => {
     const vendorKey = row.vendorId || row.vendorName || `unspecified-${row.rowNumber}`
@@ -1343,6 +1347,7 @@ export function buildProcurementSummaryTables(rows, availableFields) {
     qualityExceptions,
     tatEvents,
     sourceRecordCount: rows.length,
+    dateBounds,
   }
 }
 

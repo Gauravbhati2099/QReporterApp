@@ -1,6 +1,7 @@
 const DATABASE_NAME = 'qreporter-local'
 const STORE_NAME = 'workbooks'
 const WORKBOOK_KEY = 'latest'
+const PARSED_CACHE_VERSION = 1
 
 function openDatabase() {
   if (!('indexedDB' in window)) {
@@ -53,20 +54,40 @@ async function runWorkbookTransaction(mode, action) {
   })
 }
 
-export function saveWorkbook(file, sheetName, datasetType = 'quotation') {
+export async function saveWorkbook(file, sheetName, datasetType = 'quotation', parsedWorkbook) {
+  const metadata = {
+    name: file.name,
+    size: file.size,
+    type: file.type,
+    sheetName,
+    datasetType,
+  }
+
+  if (parsedWorkbook && file.size >= 512_000) {
+    try {
+      return await runWorkbookTransaction('readwrite', (store) =>
+        store.put({ ...metadata, parsedCacheVersion: PARSED_CACHE_VERSION, parsedWorkbook }, WORKBOOK_KEY),
+      )
+    } catch {
+      // Large parsed caches can exceed the browser's available storage; keep the source file as a fallback.
+    }
+  }
+
   return runWorkbookTransaction('readwrite', (store) =>
     store.put(
       {
+        ...metadata,
         blob: file.slice(0, file.size, file.type),
-        name: file.name,
-        size: file.size,
-        type: file.type,
-        sheetName,
-        datasetType,
       },
       WORKBOOK_KEY,
     ),
   )
+}
+
+export function getCachedWorkbook(savedWorkbook) {
+  return savedWorkbook?.parsedCacheVersion === PARSED_CACHE_VERSION
+    ? savedWorkbook.parsedWorkbook ?? null
+    : null
 }
 
 export async function loadWorkbook() {

@@ -1,11 +1,11 @@
-export default function ReportInsightsSummary({ kpis, chartRules, insights, decisionHelpers = [] }) {
+export default function ReportInsightsSummary({ reportTitle = 'Quotation report', kpis, chartRules, insights, decisionHelpers = [] }) {
   return (
     <section aria-label="Insights summary" className="panel report-insights-summary">
       <header className="report-insights-heading">
         <div>
-          <div className="eyebrow"><span className="eyebrow-line" /> REPORT GUIDE</div>
-          <h2>Insights summary</h2>
-          <p>How to read the measurements and charts in this report.</p>
+          <div className="eyebrow"><span className="eyebrow-line" /> Report guide</div>
+          <h2>{reportTitle} insights</h2>
+          <p>Definitions, chart calculations, and observations for the current report filters.</p>
         </div>
       </header>
       <div className="report-insights-grid">

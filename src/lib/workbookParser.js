@@ -1,4 +1,5 @@
 import * as XLSX from 'xlsx'
+import { buildQuotationSummaryTables } from './reportData'
 import {
   getProcurementField,
   getProcurementRowDate,
@@ -85,6 +86,45 @@ const REQUIRED_COLUMNS = {
   date: ['documentdate', 'Document Date'],
 }
 
+const QUOTATION_DETAIL_FIELDS = [
+  ['customerReferenceHeader', ['customerreferenceheader', 'Customer Reference (Header)']],
+  ['soldToPartyName', ['soldtopartyname', 'Sold-To Party Name']],
+  ['salesDocumentType', ['salesdocumenttype', 'Sales Document Type']],
+  ['salesDocumentItem', ['salesdocumentitem', 'Sales Document Item']],
+  ['validToDate', ['validtodate', 'Valid-to date']],
+  ['orderQuantityItem', ['orderquantityitem', 'Order Quantity (Item)']],
+  ['materialDescription', ['materialdescription', 'Material Description']],
+  ['orderReason', ['orderreason', 'Order Reason']],
+  ['orderReasonDescription', ['orderreasondescription', 'Order Reason Description']],
+  ['time', ['time', 'Time']],
+  ['billingBlock', ['billingblock', 'Billing Block']],
+  ['deliveryBlock', ['deliveryblock', 'Delivery Block']],
+  ['netValueItem', ['netvalueitem', 'Net Value (Item)']],
+  ['material', ['material', 'Material']],
+  ['plant', ['plant', 'Plant']],
+  ['salesOffice', ['salesoffice', 'Sales office']],
+  ['salesGroup', ['salesgroup', 'Sales group']],
+  ['salesDistrict', ['salesdistrict', 'Sales district']],
+  ['salesDistrictName', ['salesdistrictname', 'Sales district name']],
+  ['distributionChannel', ['distributionchannel', 'Distribution Channel']],
+  ['division', ['division', 'Division']],
+  ['overallStatus', ['overallstatus', 'Overall Status']],
+  ['referenceStatus', ['referencestatus', 'Reference Status']],
+  ['rejectionReason', ['reasonforrejection', 'Reason for Rejection']],
+  ['rejectionReasonDescription', ['rejectionreasondescription', 'Rejection Reason Description']],
+  ['confirmedQuantityItem', ['confirmedquantityitem', 'Confirmed Quantity (Item)']],
+  ['deliveryDate', ['deliverydate', 'Delivery Date']],
+  ['goodsIssueDate', ['goodsissuedate', 'Goods Issue Date']],
+  ['materialAvailabilityDate', ['materialavailabilitydate', 'Material Availability Date']],
+  ['personnelNumber', ['personnelnumber', 'Personnel Number']],
+  ['partnerName', ['partnername', 'Partner Name']],
+  ['overallStatusDescription', ['overallstatusdescription', 'Overall Status Description']],
+  ['salesOrganizationName', ['salesorganizationname', 'Sales Organization Name']],
+  ['distributionChannelName', ['distributionchannelname', 'Distribution Channel Name']],
+  ['divisionName', ['divisionname', 'Division Name']],
+  ['salesDocumentTypeDescription', ['salesdocumenttypedescription', 'Sales Document Type Description']],
+]
+
 const CONSISTENCY_FIELDS = [
   'salesOrganization',
   'currency',
@@ -146,17 +186,6 @@ function parseDate(value, date1904 = false) {
     : formatDate(parsed.getFullYear(), parsed.getMonth() + 1, parsed.getDate())
 }
 
-function getWorkbookContentTypes(workbook) {
-  const content = workbook.files?.['[Content_Types].xml']?.content
-  if (!content) {
-    return ''
-  }
-  if (typeof content === 'string') {
-    return content
-  }
-  return new TextDecoder().decode(Uint8Array.from(Object.values(content)))
-}
-
 function findHeaderRow(matrix) {
   const requiredNames = Object.values(REQUIRED_COLUMNS).map(([normalized]) => normalized)
   return matrix.findIndex(
@@ -179,13 +208,18 @@ function buildColumnPositions(headers) {
     }
   }
 
+  for (const [field, [normalized]] of QUOTATION_DETAIL_FIELDS) {
+    const position = headers.findIndex((header) => normalizeHeader(header) === normalized)
+    if (position >= 0) positions[field] = position
+  }
+
   if (missing.length) {
     throw new Error(`Missing required columns: ${missing.join(', ')}`)
   }
   return positions
 }
 
-function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns, date1904) {
+function parseRows(matrix, sheet, headerIndex, positions, sourceColumns, date1904) {
   const records = new Map()
   const sourceRows = []
   let validSourceRows = 0
@@ -195,9 +229,10 @@ function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns,
     const value = (field) => cells[positions[field]]
     const document = asText(value('document'))
     const rowNumber = index + 1
-    const sourceValues = (displayMatrix[index] ?? [])
-      .slice(0, sourceColumns.length)
-      .map((cell) => (cell == null ? '' : String(cell)))
+    const sourceValues = sourceColumns.map((_, column) => {
+      const cell = sheet[XLSX.utils.encode_cell({ r: index, c: column })]
+      return String(cell?.w ?? cell?.v ?? '')
+    })
 
     if (!document) {
       if (sourceValues.some((cell) => cell.trim() !== '')) {
@@ -228,7 +263,24 @@ function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns,
       amount,
       inr: EXCHANGE_RATES[currency] == null ? null : amount * EXCHANGE_RATES[currency],
     }
-    sourceRows.push({ ...record, rowNumber, sourceValues })
+    const itemRecord = { ...record }
+    for (const [field] of QUOTATION_DETAIL_FIELDS) {
+      const columnIndex = positions[field]
+      if (columnIndex != null) itemRecord[field] = asText(cells[columnIndex])
+    }
+    const sourceRow = {
+      document,
+      createdBy,
+      salesOrganization,
+      usage: record.usage,
+      currency,
+      date,
+      amount,
+      inr: record.inr,
+      rowNumber,
+      sourceValues,
+    }
+    sourceRows.push(sourceRow)
     const previous = records.get(document)
 
     if (previous) {
@@ -240,7 +292,7 @@ function parseRows(matrix, displayMatrix, headerIndex, positions, sourceColumns,
         )
       }
     } else {
-      records.set(document, record)
+      records.set(document, { ...record, ...itemRecord })
     }
     validSourceRows += 1
   }
@@ -270,19 +322,9 @@ export async function readQuotationWorkbook(file) {
 
   let workbook
   try {
-    workbook = XLSX.read(bytes, { type: 'array', bookFiles: true, cellDates: false })
+    workbook = XLSX.read(bytes, { type: 'array', cellDates: false })
   } catch {
     throw new Error('The XLSX workbook could not be opened. Check the file and try again.')
-  }
-
-  const contentTypes = getWorkbookContentTypes(workbook)
-  if (
-    !contentTypes.includes(
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml',
-    ) ||
-    !workbook.files?.['xl/workbook.xml']
-  ) {
-    throw new Error('Only XLSX-format workbooks are supported.')
   }
 
   const sheetName = workbook.SheetNames[0]
@@ -298,12 +340,10 @@ export async function readQuotationWorkbook(file) {
     blankrows: true,
   })
   const date1904 = Boolean(workbook.Workbook?.WBProps?.date1904)
-  const displayMatrix = XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: null,
-    raw: false,
-    blankrows: true,
-  })
+  const getDisplayValue = (row, column) => {
+    const cell = sheet[XLSX.utils.encode_cell({ r: row, c: column })]
+    return cell?.w ?? cell?.v ?? ''
+  }
   const headerIndex = findHeaderRow(matrix)
   if (headerIndex < 0) {
     const procurementHeaderIndex = matrix.findIndex(
@@ -311,7 +351,7 @@ export async function readQuotationWorkbook(file) {
     )
     if (procurementHeaderIndex >= 0) {
       const sourceHeaders = matrix[procurementHeaderIndex] ?? []
-      const displayHeaders = displayMatrix[procurementHeaderIndex] ?? sourceHeaders
+      const displayHeaders = sourceHeaders.map((_, column) => getDisplayValue(procurementHeaderIndex, column))
       const sourceColumns = sourceHeaders.map((header, index) => ({
         key: `source-${index}`,
         field: getProcurementField(header),
@@ -322,9 +362,7 @@ export async function readQuotationWorkbook(file) {
 
       for (let index = procurementHeaderIndex + 1; index < matrix.length; index += 1) {
         const cells = matrix[index] ?? []
-        const sourceValues = (displayMatrix[index] ?? [])
-          .slice(0, sourceColumns.length)
-          .map((cell) => (cell == null ? '' : String(cell)))
+        const sourceValues = sourceColumns.map((_, column) => String(getDisplayValue(index, column) ?? ''))
         if (!sourceValues.some((value) => value.trim())) continue
 
         const row = { rowNumber: index + 1, sourceValues }
@@ -384,7 +422,7 @@ export async function readQuotationWorkbook(file) {
   const fieldByPosition = new Map(
     Object.entries(positions).map(([field, position]) => [position, field]),
   )
-  const sourceHeaders = displayMatrix[headerIndex] ?? matrix[headerIndex]
+  const sourceHeaders = matrix[headerIndex].map((_, column) => getDisplayValue(headerIndex, column))
   const sourceColumns = matrix[headerIndex].map((header, index) => ({
     key: fieldByPosition.get(index) ?? `source-${index}`,
     label: asText(sourceHeaders[index] ?? header) || `Column ${index + 1}`,
@@ -392,7 +430,7 @@ export async function readQuotationWorkbook(file) {
   }))
   const parsed = parseRows(
     matrix,
-    displayMatrix,
+    sheet,
     headerIndex,
     positions,
     sourceColumns,
@@ -401,6 +439,7 @@ export async function readQuotationWorkbook(file) {
 
   return {
     ...parsed,
+    summaryTables: buildQuotationSummaryTables(parsed.rows),
     sourceColumns,
     fileName: file.name,
     fileSize: file.size,

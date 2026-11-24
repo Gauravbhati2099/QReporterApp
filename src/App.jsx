@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BrowserRouter,
   NavLink,
@@ -17,7 +17,6 @@ import {
   getModifiedZScoreOutlierRows,
   getOutlierRows,
   getPercentileBounds,
-  getSummary,
 } from './lib/reportData'
 import {
   getAvailableProcurementReports,
@@ -27,9 +26,11 @@ import { readWorkbookInWorker } from './lib/workbookClient'
 import {
   clearWorkbookData,
   createWorkbookFile,
+  getCachedWorkbook,
   loadWorkbook,
   saveWorkbook,
 } from './lib/workbookStorage'
+import { getChartColor } from './lib/chartColors'
 import { useAppStore } from './store/useAppStore'
 import {
   ProcurementReportCatalog,
@@ -39,6 +40,7 @@ import PrintPreviewDialog from './PrintPreviewDialog'
 import ReportErrorBoundary from './ReportErrorBoundary'
 import ReportExportMenu from './ReportExportMenu'
 import ReportInsightsSummary from './ReportInsightsSummary'
+import ReportNavigation from './ReportNavigation'
 import { exportReportsToHtml, exportRowsToExcel } from './lib/reportExport'
 import './App.css'
 
@@ -58,7 +60,7 @@ function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isP
     const knownReport = reports.find((item) => item.id === reportId)
     return (
       <section className="panel procurement-report-unavailable">
-        <div className="eyebrow"><span className="eyebrow-line" /> PROCUREMENT REPORT</div>
+        <div className="eyebrow"><span className="eyebrow-line" /> Procurement report</div>
         <h1>{knownReport?.title ?? 'Report unavailable'}</h1>
         <p>
           {knownReport
@@ -79,6 +81,7 @@ function ProcurementReportRoute({ reports, columns, fileName, summaryTables, isP
       onPreviewPrint={onPreviewPrint}
       onTogglePresentation={onTogglePresentation}
       report={report}
+      reportList={availableReports}
       summaryTables={summaryTables}
     />
   )
@@ -118,7 +121,21 @@ const PREPROCESSING_STEPS = [
 ]
 
 const CHART_GROUPS = [
-  { key: 'salesOrganization', label: 'Sales Organization' },
+  { key: 'salesOrganizationName', codeKey: 'salesOrganization', label: 'Sales organization' },
+  { key: 'salesDocumentTypeDescription', codeKey: 'salesDocumentType', label: 'Sales document type' },
+  { key: 'soldToPartyName', label: 'Customer' },
+  { key: 'salesOffice', label: 'Sales office' },
+  { key: 'salesGroup', label: 'Sales group' },
+  { key: 'salesDistrictName', codeKey: 'salesDistrict', label: 'Sales district' },
+  { key: 'distributionChannelName', codeKey: 'distributionChannel', label: 'Distribution channel' },
+  { key: 'divisionName', codeKey: 'division', label: 'Division' },
+  { key: 'materialDescription', codeKey: 'material', label: 'Material' },
+  { key: 'plant', label: 'Plant' },
+  { key: 'overallStatusDescription', codeKey: 'overallStatus', label: 'Overall status' },
+  { key: 'referenceStatusDescription', codeKey: 'referenceStatus', label: 'Reference status' },
+  { key: 'orderReasonDescription', codeKey: 'orderReason', label: 'Order reason' },
+  { key: 'rejectionReasonDescription', codeKey: 'rejectionReason', label: 'Rejection reason' },
+  { key: 'createdBy', label: 'Created by' },
   { key: 'usage', label: 'Usage group' },
   { key: 'currency', label: 'Currency' },
 ]
@@ -126,65 +143,209 @@ const CHART_GROUPS = [
 const REPORT_CARDS = [
   {
     id: 'overview',
-    title: 'Quotation overview',
-    description: 'Review quotation volume, converted value, and organization performance.',
-    groupBy: 'salesOrganization',
+    title: 'Sales organization performance',
+    description: 'Compare quotation volume and converted value by organization name and SAP code.',
+    groupBy: 'salesOrganizationName',
     icon: 'chart',
   },
   {
+    id: 'customer',
+    title: 'Customer performance',
+    description: 'Rank sold-to customers by quotation volume and converted INR value.',
+    groupBy: 'soldToPartyName',
+    icon: 'file',
+  },
+  {
+    id: 'sales-district',
+    title: 'Sales district',
+    description: 'Compare quotations by district description and SAP district code, with Config and Manual value splits.',
+    groupBy: 'salesDistrictName',
+    icon: 'chart',
+  },
+  {
+    id: 'distribution-channel',
+    title: 'Distribution channel',
+    description: 'Compare quotations by channel description and SAP channel code, with Config and Manual value splits.',
+    groupBy: 'distributionChannelName',
+    icon: 'chart',
+  },
+  {
+    id: 'sales-office',
+    title: 'Sales office',
+    description: 'Compare quotation volume and converted INR value across sales offices.',
+    groupBy: 'salesOffice',
+    icon: 'chart',
+  },
+  {
+    id: 'sales-group',
+    title: 'Sales group',
+    description: 'Compare quotation volume and converted INR value by responsible sales group.',
+    groupBy: 'salesGroup',
+    icon: 'chart',
+  },
+  {
+    id: 'material',
+    title: 'Material analysis',
+    description: 'Compare quotations by material description and SAP material code, including Config and Manual splits.',
+    groupBy: 'materialDescription',
+    icon: 'file',
+  },
+  {
+    id: 'plant',
+    title: 'Plant analysis',
+    description: 'Compare quoted work by supplying plant.',
+    groupBy: 'plant',
+    icon: 'chart',
+  },
+  {
+    id: 'division',
+    title: 'Division analysis',
+    description: 'Compare quotations by division description and SAP division code.',
+    groupBy: 'divisionName',
+    icon: 'chart',
+  },
+  {
+    id: 'document-type',
+    title: 'Document type',
+    description: 'Compare quotations by document type description and SAP type code.',
+    groupBy: 'salesDocumentTypeDescription',
+    icon: 'file',
+  },
+  {
+    id: 'status',
+    title: 'Status analysis',
+    description: 'Review quotation volume and converted INR value by status description and SAP status code.',
+    groupBy: 'overallStatusDescription',
+    icon: 'check',
+  },
+  {
+    id: 'order-reason',
+    title: 'Order reason',
+    description: 'Compare quotation volume and converted INR value by order reason description and SAP code.',
+    groupBy: 'orderReasonDescription',
+    icon: 'file',
+  },
+  {
+    id: 'creator',
+    title: 'Created by',
+    description: 'Compare quotation volume and converted INR value by the SAP user who created each document.',
+    groupBy: 'createdBy',
+    icon: 'check',
+  },
+  {
     id: 'usage',
-    title: 'Config Usage Dashboard',
-    description: 'Compare manual quotations with configurator-generated quotations.',
+    title: 'Configurator vs Manual',
+    description: 'Compare quotation volume and converted INR value for Config and Manual quotations.',
     groupBy: 'usage',
     icon: 'check',
   },
   {
     id: 'currency',
-    title: 'Currency breakdown',
-    description: 'Explore quotation volume and converted value across currencies.',
+    title: 'Currency analysis',
+    description: 'Compare quotation counts and original-currency totals, keeping different currencies separate.',
     groupBy: 'currency',
     icon: 'file',
   },
   {
     id: 'trend',
     title: 'Trend analysis',
-    description: 'Track quotation volume and converted value across time brackets.',
+    description: 'Track Config and Manual quotation volume and converted INR value across selectable time periods.',
     groupBy: 'trend',
     icon: 'chart',
   },
 ]
 
+const QUOTATION_REQUIRED_COLUMNS = 'Sales Document, Created By, Sales Organization, Document Currency, Net Value (Header), Document Date'
+
+const REPORT_DIMENSION_COLUMNS = {
+  salesOrganizationName: 'Sales Organization Name / Sales Organization',
+  soldToPartyName: 'Sold-To Party Name',
+  salesDistrictName: 'Sales district name / Sales district',
+  distributionChannelName: 'Distribution Channel Name / Distribution Channel',
+  salesOffice: 'Sales office',
+  salesGroup: 'Sales group',
+  materialDescription: 'Material Description / Material',
+  plant: 'Plant',
+  divisionName: 'Division Name / Division',
+  salesDocumentTypeDescription: 'Sales Document Type Description / Sales Document Type',
+  overallStatusDescription: 'Overall Status Description / Overall Status',
+  orderReasonDescription: 'Order Reason Description / Order Reason',
+  createdBy: 'Created By',
+  usage: 'Created By (classifies Config vs Manual)',
+  currency: 'Document Currency',
+  trend: 'Document Date, Created By',
+}
+
+const quotationReportTitle = (key) => REPORT_CARDS.find((report) => report.groupBy === key)?.title ?? 'Quotation report'
+
 const TREND_INTERVALS = [
-  { key: 'day', label: 'Daily' },
-  { key: 'week', label: 'Weekly' },
-  { key: 'month', label: 'Monthly' },
-  { key: 'quarter', label: 'Quarterly' },
-  { key: 'year', label: 'Yearly' },
-  { key: 'custom', label: 'Custom range' },
+  { key: 'day', label: 'Daily', minimumDays: 1 },
+  { key: 'week', label: 'Weekly', minimumDays: 8 },
+  { key: 'month', label: 'Monthly', minimumDays: 32 },
+  { key: 'quarter', label: 'Quarterly', minimumDays: 93 },
+  { key: 'year', label: 'Yearly', minimumDays: 366 },
 ]
 
-function getTrendBucket(dateValue, interval) {
+function getTrendSpanDays(rows) {
+  const dates = rows.map((row) => row.date).filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? ''))).sort()
+  if (!dates.length) return 0
+  const start = Date.parse(`${dates[0]}T00:00:00Z`)
+  const end = Date.parse(`${dates.at(-1)}T00:00:00Z`)
+  return Math.floor((end - start) / 86_400_000) + 1
+}
+
+function getRecommendedTrendInterval(spanDays) {
+  if (spanDays <= 14) return 'day'
+  if (spanDays <= 90) return 'week'
+  if (spanDays <= 730) return 'month'
+  if (spanDays <= 1825) return 'quarter'
+  return 'year'
+}
+
+function getTrendBucket(dateValue, interval, spanDays) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateValue ?? ''))) return null
   const [year, month, day] = dateValue.split('-').map(Number)
   const date = new Date(Date.UTC(year, month - 1, day))
-  if (interval === 'day') return { key: dateValue, label: formatDateLabel(dateValue) }
+  if (interval === 'day') {
+    const axisLabel = date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', ...(spanDays > 365 ? { year: '2-digit' } : {}), timeZone: 'UTC' })
+    return { key: dateValue, label: formatDateLabel(dateValue), axisLabel }
+  }
   if (interval === 'week') {
     const mondayOffset = (date.getUTCDay() + 6) % 7
     date.setUTCDate(date.getUTCDate() - mondayOffset)
     const key = date.toISOString().slice(0, 10)
-    return { key, label: `Week of ${formatDateLabel(key)}` }
+    const axisLabel = date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', ...(spanDays > 365 ? { year: '2-digit' } : {}), timeZone: 'UTC' })
+    return { key, label: `Week of ${formatDateLabel(key)}`, axisLabel }
   }
   if (interval === 'quarter') {
     const quarter = Math.floor((month - 1) / 3) + 1
     const key = `${year}-Q${quarter}`
-    return { key, label: `Q${quarter} ${year}` }
+    return { key, label: `Q${quarter} ${year}`, axisLabel: `Q${quarter} '${String(year).slice(-2)}` }
   }
   if (interval === 'year') {
     const key = String(year)
-    return { key, label: key }
+    return { key, label: key, axisLabel: key }
   }
   const key = `${year}-${String(month).padStart(2, '0')}`
-  return { key, label: new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' }) }
+  const label = new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+  const axisLabel = new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' })
+  return { key, label, axisLabel }
+}
+
+function getTrendSortValue(point, key) {
+  if (key === 'configCount') return point.CONFIGURATOR.count
+  if (key === 'manualCount') return point.MANUAL.count
+  if (key === 'configValue') return point.CONFIGURATOR.inr
+  if (key === 'manualValue') return point.MANUAL.inr
+  return point.key
+}
+
+function getComparisonSortValue(entry, key) {
+  if (key === 'configCount') return entry.CONFIGURATOR.count
+  if (key === 'manualCount') return entry.MANUAL.count
+  if (key === 'configValue') return entry.CONFIGURATOR.inr
+  if (key === 'manualValue') return entry.MANUAL.inr
+  return entry.label
 }
 
 function UsageTrendChart({ title, subtitle, series, formatValue }) {
@@ -196,9 +357,13 @@ function UsageTrendChart({ title, subtitle, series, formatValue }) {
   const visibleSeries = series.filter((item) => item.visible !== false)
   const pointCount = Math.max(0, ...visibleSeries.map((item) => item.points.length))
   const maximum = Math.max(0, ...visibleSeries.flatMap((item) => item.points.map((point) => Number.isFinite(point.value) ? point.value : 0)))
-  const labelIndexes = pointCount <= 8
-    ? Array.from({ length: pointCount }, (_, index) => index)
-    : [...new Set([0, Math.round((pointCount - 1) / 3), Math.round((pointCount - 1) * 2 / 3), pointCount - 1])]
+  const maximumAxisLabels = Math.max(2, Math.floor(plotWidth / 92))
+  const axisLabelCount = Math.min(pointCount, maximumAxisLabels)
+  const labelIndexes = axisLabelCount === 0
+    ? []
+    : axisLabelCount === 1
+      ? [0]
+    : [...new Set(Array.from({ length: axisLabelCount }, (_, index) => Math.round(index * (pointCount - 1) / (axisLabelCount - 1))))]
   return (
     <article className="panel trend-chart-panel">
       <div className="panel-heading"><div><h2>{title}</h2><p>{subtitle}</p></div></div>
@@ -227,7 +392,7 @@ function UsageTrendChart({ title, subtitle, series, formatValue }) {
               const point = item?.points[index]
               if (!point) return null
               const x = inset.left + (pointCount < 2 ? plotWidth / 2 : index / (pointCount - 1) * plotWidth)
-              return <text className="trend-axis-label" key={`${point.key}-${index}`} textAnchor={index === 0 ? 'start' : index === pointCount - 1 ? 'end' : 'middle'} x={x} y={height - 7}>{point.label}</text>
+              return <text className="trend-axis-label" key={`${point.key}-${index}`} textAnchor={index === 0 ? 'start' : index === pointCount - 1 ? 'end' : 'middle'} x={x} y={height - 7}>{point.axisLabel ?? point.label}</text>
             })}
           </svg>
         </div>
@@ -334,75 +499,53 @@ function MultiSelect({ label, options, selected, onChange }) {
   )
 }
 
-function MetricChart({ title, subtitle, entries, metric, total, id }) {
-  const denominator =
-    metric === 'count'
-      ? entries.reduce((sum, entry) => sum + entry.value, 0)
-      : entries.reduce((sum, entry) => sum + Math.abs(entry.value), 0)
-  const maximum = Math.max(0, ...entries.map((entry) => Math.abs(entry.value)))
-  const sortedEntries = [...entries]
-    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-    .slice(0, 7)
+const PIE_LABEL_LIMIT = 10
 
-  return (
-    <section className="panel chart-panel">
-      <div className="panel-heading">
-        <div>
-          <h2>{title}</h2>
-          <p>{subtitle}</p>
-        </div>
-        <span className="unit-tag">{metric === 'count' ? 'QUOTATIONS' : 'INR · LACS / CR'}</span>
-      </div>
-      <div className="chart-total">
-        <span>{metric === 'count' ? formatCount(total) : formatMoney(total, 'INR')}</span>
-        <small>{metric === 'count' ? 'unique sales documents' : 'converted value'}</small>
-      </div>
-      <div className="bar-list">
-        {sortedEntries.map((entry, index) => {
-          const share = denominator ? (Math.abs(entry.value) / denominator) * 100 : 0
-          const width = maximum ? (Math.abs(entry.value) / maximum) * 100 : 0
-          return (
-            <div className="bar-entry" key={entry.label}>
-              <div className="bar-meta">
-                <span className="bar-label" title={entry.label}>
-                  <i className={`legend-dot tone-${index}`} />
-                  {entry.label}
-                </span>
-                <span className="bar-number">
-                  {metric === 'count'
-                    ? formatCount(entry.value)
-                    : formatMoney(entry.value, 'INR')}
-                  <small>{share.toFixed(1)}%</small>
-                </span>
-              </div>
-              <div
-                aria-label={`${entry.label}: ${metric === 'count' ? formatCount(entry.value) : formatMoney(entry.value, 'INR')}`}
-                className="bar-track"
-                role="img"
-              >
-                <span
-                  className={`bar-fill tone-${index}`}
-                  style={{ width: `${width}%` }}
-                />
-              </div>
-            </div>
-          )
-        })}
-        {sortedEntries.length === 0 && <div className="chart-empty">No data for this selection.</div>}
-      </div>
-      <div className="chart-footnote">
-        {metric === 'count'
-          ? 'Share of selected quotations'
-          : 'Share of absolute INR value · unconfigured currencies excluded'}
-      </div>
-      <span className="sr-only" id={`${id}-description`}>
-        {title} grouped by the selected chart dimension.
-      </span>
-    </section>
-  )
+function getTreemapTiles(entries, metric) {
+  const ranked = [...entries]
+    .map((entry) => ({
+      ...entry,
+      pieValue: metric === 'count' ? entry.count : Math.abs(entry.inr),
+    }))
+    .filter((entry) => entry.pieValue > 0)
+    .sort((a, b) => b.pieValue - a.pieValue)
+  const visible = ranked.slice(0, PIE_LABEL_LIMIT)
+  const remainder = ranked.slice(PIE_LABEL_LIMIT)
+  if (remainder.length) {
+    visible.push({
+      label: 'Other',
+      count: remainder.reduce((sum, entry) => sum + entry.count, 0),
+      inr: remainder.reduce((sum, entry) => sum + entry.inr, 0),
+      pieValue: remainder.reduce((sum, entry) => sum + entry.pieValue, 0),
+    })
+  }
+  return visible
 }
 
-const PIE_COLORS = ['#4169e1', '#159777', '#7759cc', '#df8b36', '#d65773', '#398da8', '#78869c']
+function TreemapChart({ entries, metric, groupLabel }) {
+  const tiles = getTreemapTiles(entries, metric)
+  const total = tiles.reduce((sum, entry) => sum + entry.pieValue, 0)
+  return (
+    <div className="treemap" role="list" aria-label={`Treemap of ${metric === 'count' ? 'quotation count' : 'absolute converted INR value'} by ${groupLabel}`}>
+      {tiles.map((tile, index) => {
+        const share = total ? tile.pieValue / total : 0
+        return (
+          <div
+            className="treemap-tile"
+            key={tile.label}
+            role="listitem"
+            style={{ flexGrow: Math.max(share * 100, 8), '--pie-color': getChartColor(index) }}
+            title={`${tile.label}: ${metric === 'count' ? formatCount(tile.count) : formatMoney(Math.abs(tile.inr), 'INR')} (${(share * 100).toFixed(1)}%)`}
+          >
+            <strong>{tile.label}</strong>
+            <span>{metric === 'count' ? formatCount(tile.count) : formatMoney(Math.abs(tile.inr), 'INR')}</span>
+            <small>{(share * 100).toFixed(1)}%</small>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
 
 function getPieSlices(entries, total, metric) {
   let angle = -90
@@ -437,7 +580,7 @@ function getPieSlices(entries, total, metric) {
   })
 }
 
-function PieChart({ entries, metric, groupLabel }) {
+const PieChart = memo(function PieChart({ entries, metric, groupLabel }) {
   const pieEntries = entries
     .map((entry) => ({
       ...entry,
@@ -445,6 +588,7 @@ function PieChart({ entries, metric, groupLabel }) {
     }))
     .filter((entry) => entry.pieValue > 0)
   const total = pieEntries.reduce((sum, entry) => sum + entry.pieValue, 0)
+  const useTreemap = pieEntries.length > PIE_LABEL_LIMIT
   const slices = getPieSlices(pieEntries, total, metric)
 
   return (
@@ -457,7 +601,7 @@ function PieChart({ entries, metric, groupLabel }) {
           </p>
         </div>
         <span className="unit-tag">
-          {metric === 'count' ? 'QUOTATIONS' : 'ABSOLUTE INR · LACS / CR'}
+          {metric === 'count' ? 'Quotations' : 'Absolute INR · Lacs / Cr'}
         </span>
       </div>
       <div className="chart-total pie-total">
@@ -468,7 +612,9 @@ function PieChart({ entries, metric, groupLabel }) {
           {metric === 'count' ? 'unique sales documents' : 'absolute converted value'}
         </small>
       </div>
-      {slices.length ? (
+      {useTreemap ? (
+        <TreemapChart entries={entries} metric={metric} groupLabel={groupLabel} />
+      ) : slices.length ? (
         <div className="pie-content">
           <svg
             aria-label={`Pie chart of ${metric === 'count' ? 'quotation count' : 'absolute converted INR value'} by ${groupLabel}`}
@@ -485,7 +631,7 @@ function PieChart({ entries, metric, groupLabel }) {
                   'M 110 16 A 94 94 0 1 1 110 204 A 94 94 0 1 1 110 16 Z'
                 }
                 key={slice.label}
-                style={{ '--pie-color': PIE_COLORS[slice.index % PIE_COLORS.length] }}
+                style={{ '--pie-color': getChartColor(slice.index) }}
               >
                 <title>
                   {slice.label}: {slice.valueLabel} ({(slice.share * 100).toFixed(1)}%)
@@ -507,7 +653,7 @@ function PieChart({ entries, metric, groupLabel }) {
                 <i
                   aria-hidden="true"
                   className="pie-legend-dot"
-                  style={{ '--pie-color': PIE_COLORS[slice.index % PIE_COLORS.length] }}
+                  style={{ '--pie-color': getChartColor(slice.index) }}
                 />
                 <span className="pie-legend-label" title={slice.label}>{slice.label}</span>
                 <span className="pie-legend-value">
@@ -528,31 +674,19 @@ function PieChart({ entries, metric, groupLabel }) {
       )}
     </section>
   )
-}
+})
 
-function formatExactMoney(amount, currency) {
-  if (currency === 'INR') {
-    return `₹${Number(amount).toLocaleString('en-IN', {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })} INR`
-  }
-  return `${Number(amount).toLocaleString('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })} ${currency}`
-}
-
-const SUMMARY_EXPORT_COLUMNS = [
-  ['Sales Organization', (row) => row.salesOrganization],
-  ['Usage group', (row) => row.usage],
-  ['Currency', (row) => row.currency],
-  ['Quotations', (row) => row.count],
-  ['Total value (original currency)', (row) => row.value],
+const QUOTATION_BREAKDOWN_COLUMNS = [
+  ['Report group', (row) => row.label],
+  ['Config quotations', (row) => row.CONFIGURATOR.count],
+  ['Manual quotations', (row) => row.MANUAL.count],
+  ['Total quotations', (row) => row.count],
+  ['Config value (INR)', (row) => row.CONFIGURATOR.inr],
+  ['Manual value (INR)', (row) => row.MANUAL.inr],
+  ['Total value (INR)', (row) => row.inr],
 ]
 
-function makeCsv(rows) {
-  const columns = SUMMARY_EXPORT_COLUMNS
+function makeCsv(rows, columns) {
   const escapeCell = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`
   return [
     columns.map(([label]) => escapeCell(label)).join(','),
@@ -583,6 +717,16 @@ function compareRawDataValues(left, right, key) {
 
 const PROCESSED_DATA_COLUMNS = [
   { key: 'document', label: 'Sales document' },
+  { key: 'customerReferenceHeader', label: 'Customer Reference' },
+  { key: 'soldToPartyName', label: 'Customer' },
+  { key: 'salesDocumentTypeDescription', label: 'Sales Document Type' },
+  { key: 'salesDocumentItem', label: 'Item' },
+  { key: 'validToDate', label: 'Valid-to date' },
+  { key: 'materialDescription', label: 'Material Description' },
+  { key: 'salesOffice', label: 'Sales office' },
+  { key: 'salesGroup', label: 'Sales group' },
+  { key: 'overallStatusDescription', label: 'Overall Status' },
+  { key: 'referenceStatusDescription', label: 'Reference Status' },
   { key: 'createdBy', label: 'Created By' },
   { key: 'salesOrganization', label: 'Sales Organization' },
   { key: 'usage', label: 'Usage group' },
@@ -616,6 +760,17 @@ function summarizeSelectedValues(selected, options) {
   return selected.length ? selected.join(', ') : 'None'
 }
 
+function getWorkbookSelections(imported) {
+  if (imported.datasetType === 'procurement') {
+    return { organizations: [], usages: [], currencies: [] }
+  }
+  return imported.summaryTables?.options ?? {
+    organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
+    usages: [...new Set(imported.rows.map((row) => row.usage))],
+    currencies: [...new Set(imported.rows.map((row) => row.currency))],
+  }
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -626,17 +781,16 @@ function App() {
 
 function AppShell() {
   const inputRef = useRef(null)
-  const themeMenuRef = useRef(null)
-  const themeButtonRef = useRef(null)
   const navigate = useNavigate()
   const location = useLocation()
   const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false)
-  const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false)
-  const [trendInterval, setTrendInterval] = useState('month')
+  const [showBackToTop, setShowBackToTop] = useState(false)
+  const [trendInterval, setTrendInterval] = useState(null)
   const [trendUsageSelection, setTrendUsageSelection] = useState(['CONFIGURATOR', 'MANUAL'])
   const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
   const [rawDataRows, setRawDataRows] = useState([])
   const [rawDataColumns, setRawDataColumns] = useState([])
+  const [visibleRawDataCount, setVisibleRawDataCount] = useState(100)
   const [rawDataSearch, setRawDataSearch] = useState('')
   const [rawDataSort, setRawDataSort] = useState({ key: 'date', direction: 'desc' })
   const [rawDataSlicers, setRawDataSlicers] = useState({
@@ -645,6 +799,10 @@ function AppShell() {
     currency: '',
   })
   const [rawDataView, setRawDataView] = useState('raw')
+  const [comparisonSearch, setComparisonSearch] = useState('')
+  const [comparisonSort, setComparisonSort] = useState({ key: 'label', direction: 'asc' })
+  const [trendSort, setTrendSort] = useState({ key: 'key', direction: 'asc' })
+  const [visibleComparisonCount, setVisibleComparisonCount] = useState(50)
   const isRestoring = useAppStore((state) => state.isRestoring)
   const rows = useAppStore((state) => state.rows)
   const datasetType = useAppStore((state) => state.datasetType)
@@ -653,8 +811,6 @@ function AppShell() {
   const dateFrom = useAppStore((state) => state.dateFrom)
   const dateTo = useAppStore((state) => state.dateTo)
   const groupBy = useAppStore((state) => state.groupBy)
-  const query = useAppStore((state) => state.query)
-  const tableFilters = useAppStore((state) => state.tableFilters)
   const outlierFilter = useAppStore((state) => state.outlierFilter)
   const percentileTail = useAppStore((state) => state.percentileTail)
   const theme = useAppStore((state) => state.theme)
@@ -673,7 +829,6 @@ function AppShell() {
   const setDateTo = useAppStore((state) => state.setDateTo)
   const setGroupBy = useAppStore((state) => state.setGroupBy)
   const setQuery = useAppStore((state) => state.setQuery)
-  const setTableFilters = useAppStore((state) => state.setTableFilters)
   const setOutlierFilter = useAppStore((state) => state.setOutlierFilter)
   const setPercentileTail = useAppStore((state) => state.setPercentileTail)
   const setTheme = useAppStore((state) => state.setTheme)
@@ -685,26 +840,14 @@ function AppShell() {
   const setIsPresenting = useAppStore((state) => state.setIsPresenting)
 
   useEffect(() => {
-    if (!isThemeMenuOpen) return undefined
-
-    function handlePointerDown(event) {
-      if (!themeMenuRef.current?.contains(event.target)) setIsThemeMenuOpen(false)
+    const updateBackToTopVisibility = () => {
+      const shouldShow = window.scrollY > 420
+      setShowBackToTop((current) => current === shouldShow ? current : shouldShow)
     }
-
-    function handleKeyDown(event) {
-      if (event.key === 'Escape') {
-        setIsThemeMenuOpen(false)
-        themeButtonRef.current?.focus()
-      }
-    }
-
-    document.addEventListener('pointerdown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isThemeMenuOpen])
+    updateBackToTopVisibility()
+    window.addEventListener('scroll', updateBackToTopVisibility, { passive: true })
+    return () => window.removeEventListener('scroll', updateBackToTopVisibility)
+  }, [])
 
   function togglePreprocessingStep(stepId) {
     setSelectedSteps((current) =>
@@ -722,21 +865,23 @@ function AppShell() {
         const savedWorkbook = await loadWorkbook()
         if (!savedWorkbook) return
 
-        const file = createWorkbookFile(savedWorkbook)
-        const imported = await readWorkbookInWorker(file)
+        let file
+        let imported = getCachedWorkbook(savedWorkbook)
+        if (!imported) {
+          file = createWorkbookFile(savedWorkbook)
+          imported = await readWorkbookInWorker(file)
+          void saveWorkbook(file, imported.sheetName, imported.datasetType, imported).catch(() => {})
+        }
         if (!active) return
 
-        const importedBounds = getDateBounds(imported.rows)
+        const importedBounds = imported.summaryTables?.dateBounds ?? getDateBounds(imported.rows)
         setRows(imported.rows)
         setDatasetType(imported.datasetType ?? savedWorkbook.datasetType ?? 'quotation')
         setSummaryTables(imported.summaryTables ?? null)
         setRawDataRows(imported.sourceRows ?? imported.rows)
         setRawDataColumns(imported.sourceColumns ?? [])
-        setSelections({
-          organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
-          usages: [...new Set(imported.rows.map((row) => row.usage))],
-          currencies: [...new Set(imported.rows.map((row) => row.currency))],
-        })
+        setVisibleRawDataCount(100)
+        setSelections(getWorkbookSelections(imported))
         setDateFrom(importedBounds.min)
         setDateTo(importedBounds.min === importedBounds.max ? '' : importedBounds.max)
         setFileInfo({
@@ -798,26 +943,32 @@ function AppShell() {
     }
   }, [datasetType, location.pathname, navigate, rows.length])
 
-  const bounds = useMemo(() => getDateBounds(rows), [rows])
-  const outlierRows = useMemo(() => getOutlierRows(rows), [rows])
+  const isRawDataRoute = location.pathname.startsWith('/raw-data')
+  const needsQuotationAnalysis = datasetType !== 'procurement' && (
+    location.pathname === '/dashboard' || (isRawDataRoute && rawDataView === 'processed')
+  )
+  const bounds = summaryTables?.dateBounds ?? getDateBounds(rows)
+  const outlierRows = useMemo(
+    () => needsQuotationAnalysis && outlierFilter === 'iqr'
+      ? new Set(summaryTables?.outliers?.iqr ?? [...getOutlierRows(rows)].map((row) => row.document))
+      : new Set(),
+    [needsQuotationAnalysis, outlierFilter, rows, summaryTables],
+  )
   const modifiedZScoreOutlierRows = useMemo(
-    () => getModifiedZScoreOutlierRows(rows),
-    [rows],
+    () => needsQuotationAnalysis && outlierFilter === 'mad'
+      ? new Set(summaryTables?.outliers?.mad ?? [...getModifiedZScoreOutlierRows(rows)].map((row) => row.document))
+      : new Set(),
+    [needsQuotationAnalysis, outlierFilter, rows, summaryTables],
   )
   const percentileBounds = useMemo(
-    () => getPercentileBounds(rows, percentileTail),
-    [percentileTail, rows],
+    () => needsQuotationAnalysis && outlierFilter === 'percentile' ? getPercentileBounds(rows, percentileTail) : new Map(),
+    [needsQuotationAnalysis, outlierFilter, percentileTail, rows],
   )
-  const options = useMemo(
-    () => ({
-      organizations: [...new Set(rows.map((row) => row.salesOrganization))].sort(
-        (a, b) => a.localeCompare(b, undefined, { numeric: true }),
-      ),
-      usages: [...new Set(rows.map((row) => row.usage))].sort(),
-      currencies: [...new Set(rows.map((row) => row.currency))].sort(),
-    }),
-    [rows],
-  )
+  const options = useMemo(() => summaryTables?.options ?? {
+    organizations: [...new Set(rows.map((row) => row.salesOrganization))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+    usages: [...new Set(rows.map((row) => row.usage))].sort(),
+    currencies: [...new Set(rows.map((row) => row.currency))].sort(),
+  }, [rows, summaryTables])
 
   const dateError = useMemo(() => {
     if (!rows.length) return ''
@@ -833,48 +984,40 @@ function AppShell() {
     return ''
   }, [bounds.max, bounds.min, dateFrom, dateTo, rows.length])
 
-  const rawDataOptions = useMemo(() => ({
+  const rawDataOptions = useMemo(() => isRawDataRoute ? ({
     salesOrganization: [...new Set(rawDataRows.map((row) => row.salesOrganization).filter(Boolean))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
     usage: [...new Set(rawDataRows.map((row) => row.usage).filter(Boolean))].sort(),
     currency: [...new Set(rawDataRows.map((row) => row.currency).filter(Boolean))].sort(),
-  }), [rawDataRows])
+  }) : { salesOrganization: [], usage: [], currency: [] }, [isRawDataRoute, rawDataRows])
   const displayedDataColumns = datasetType === 'procurement'
     ? rawDataView === 'raw' ? rawDataColumns : rawDataColumns.filter((column) => column.field)
     : rawDataView === 'raw' ? rawDataColumns : PROCESSED_DATA_COLUMNS
 
   const visibleRawRows = useMemo(() => {
+    if (!isRawDataRoute) return []
     const query = rawDataSearch.trim().toLowerCase()
-    return [...rawDataRows]
+    const sourceColumn = rawDataColumns.find((column) => column.key === rawDataSort.key)
+    return rawDataRows
       .filter((row) => {
-        const matchesQuery = !query || Object.values({
-          document: row.document,
-          createdBy: row.createdBy,
-          salesOrganization: row.salesOrganization,
-          usage: row.usage,
-          currency: row.currency,
-          date: row.date,
-          amount: String(row.amount),
-          inr: row.inr != null ? String(row.inr) : '',
-          sourceValues: row.sourceValues?.join(' '),
-        }).some((value) => String(value).toLowerCase().includes(query))
-
         const matchesSalesOrganization = !rawDataSlicers.salesOrganization || row.salesOrganization === rawDataSlicers.salesOrganization
         const matchesUsage = !rawDataSlicers.usage || row.usage === rawDataSlicers.usage
         const matchesCurrency = !rawDataSlicers.currency || row.currency === rawDataSlicers.currency
-
-        return matchesQuery && matchesSalesOrganization && matchesUsage && matchesCurrency
+        if (!matchesSalesOrganization || !matchesUsage || !matchesCurrency) return false
+        if (!query) return true
+        const searchableValues = [row.document, row.createdBy, row.salesOrganization, row.usage, row.currency, row.date, row.amount, row.inr]
+        return searchableValues.some((value) => String(value ?? '').toLowerCase().includes(query)) ||
+          row.sourceValues?.some((value) => value.toLowerCase().includes(query))
       })
       .sort((a, b) => {
         const direction = rawDataSort.direction === 'asc' ? 1 : -1
-        const sourceColumn = rawDataColumns.find((column) => column.key === rawDataSort.key)
         const left = sourceColumn ? a.sourceValues?.[sourceColumn.sourceIndex] : a[rawDataSort.key]
         const right = sourceColumn ? b.sourceValues?.[sourceColumn.sourceIndex] : b[rawDataSort.key]
         return compareRawDataValues(left, right, rawDataSort.key) * direction
       })
-  }, [rawDataColumns, rawDataRows, rawDataSearch, rawDataSlicers, rawDataSort])
+  }, [isRawDataRoute, rawDataColumns, rawDataRows, rawDataSearch, rawDataSlicers, rawDataSort])
 
   const selectedRows = useMemo(() => {
-    if (dateError) return []
+    if (!needsQuotationAnalysis || dateError) return []
     const effectiveTo = dateTo || dateFrom
     return rows.filter(
       (row) =>
@@ -884,13 +1027,13 @@ function AppShell() {
         (!dateFrom || row.date >= dateFrom) &&
         (!effectiveTo || row.date <= effectiveTo),
     )
-  }, [dateError, dateFrom, dateTo, rows, selections])
+  }, [dateError, dateFrom, dateTo, needsQuotationAnalysis, rows, selections])
 
   const filteredRows = useMemo(() => {
     if (outlierFilter === 'zero') return selectedRows.filter((row) => row.amount !== 0)
-    if (outlierFilter === 'iqr') return selectedRows.filter((row) => !outlierRows.has(row))
+    if (outlierFilter === 'iqr') return selectedRows.filter((row) => !outlierRows.has(row.document))
     if (outlierFilter === 'mad') {
-      return selectedRows.filter((row) => !modifiedZScoreOutlierRows.has(row))
+      return selectedRows.filter((row) => !modifiedZScoreOutlierRows.has(row.document))
     }
     if (outlierFilter === 'percentile') {
       return selectedRows.filter((row) => {
@@ -900,7 +1043,8 @@ function AppShell() {
     }
     return selectedRows
   }, [modifiedZScoreOutlierRows, outlierFilter, outlierRows, percentileBounds, selectedRows])
-
+  const rawDataTableRows = rawDataView === 'raw' || datasetType === 'procurement' ? visibleRawRows : filteredRows
+  const visibleDataTableRows = rawDataTableRows.slice(0, visibleRawDataCount)
   const percentileRangeSummary = useMemo(() => {
     if (outlierFilter !== 'percentile') return ''
     const retainedRanges = new Map()
@@ -925,54 +1069,68 @@ function AppShell() {
       .join(' · ')
   }, [filteredRows, outlierFilter, percentileBounds, selectedRows])
 
-  const summary = useMemo(() => getSummary(filteredRows), [filteredRows])
-  const tableRows = useMemo(() => {
-    const lowerQuery = query.trim().toLowerCase()
-    return summary.filter((row) => {
-      const values = {
-        salesOrganization: row.salesOrganization,
-        usage: row.usage,
-        currency: row.currency,
-        count: formatCount(row.count),
-        value: formatMoney(row.value, row.currency),
-      }
-      return (
-        (!lowerQuery ||
-          Object.values(values).some((value) => value.toLowerCase().includes(lowerQuery))) &&
-        Object.entries(tableFilters).every(
-          ([key, value]) => !value || values[key] === value,
-        )
-      )
-    })
-  }, [query, summary, tableFilters])
-
   const kpis = useMemo(() => {
     const convertedRows = filteredRows.filter((row) => row.inr != null)
     return {
       quotations: filteredRows.length,
+      organizations: new Set(filteredRows.map((row) => row.salesOrganization).filter(Boolean)).size,
       totalInr: convertedRows.reduce((sum, row) => sum + row.inr, 0),
-      organizations: new Set(filteredRows.map((row) => row.salesOrganization)).size,
       convertedCount: convertedRows.length,
       currencies: [...new Set(filteredRows.filter((row) => row.inr == null).map((row) => row.currency))],
     }
   }, [filteredRows])
 
-  const chartEntries = useMemo(() => {
-    const groups = new Map()
+  const reportSummary = useMemo(() => {
+    const report = CHART_GROUPS.find((item) => item.key === groupBy)
+    if (!report) return []
+    const field = report.key
+    const results = new Map()
     for (const row of filteredRows) {
-      const label = String(row[groupBy])
-      const current = groups.get(label) ?? { label, count: 0, inr: 0 }
-      current.count += 1
-      if (row.inr != null) current.inr += row.inr
-      groups.set(label, current)
+      const code = report.codeKey ? String(row[report.codeKey] ?? '').trim() : ''
+      const description = String(row[field] ?? '').trim()
+      const label = description && code && description !== code ? `${description} (${code})` : description || code || 'Unspecified'
+      const identity = code || label
+      const entry = results.get(identity) ?? { label, code, count: 0, inr: 0, CONFIGURATOR: { count: 0, inr: 0 }, MANUAL: { count: 0, inr: 0 } }
+      if (!entry.label || entry.label === entry.code) entry.label = label
+      entry.count += 1
+      entry[row.usage].count += 1
+      if (row.inr != null) {
+        entry.inr += row.inr
+        entry[row.usage].inr += row.inr
+      }
+      results.set(identity, entry)
     }
-    return [...groups.values()]
+    return [...results.values()].sort((left, right) => left.label.localeCompare(right.label, undefined, { numeric: true, sensitivity: 'base' }))
   }, [filteredRows, groupBy])
+  const chartEntries = reportSummary
+  const filteredComparisonRows = useMemo(() => {
+    const query = comparisonSearch.trim().toLowerCase()
+    const matches = query ? chartEntries.filter((entry) => entry.label.toLowerCase().includes(query)) : chartEntries
+    return [...matches].sort((left, right) => {
+      const a = getComparisonSortValue(left, comparisonSort.key)
+      const b = getComparisonSortValue(right, comparisonSort.key)
+      const result = typeof a === 'number' && typeof b === 'number'
+        ? a - b
+        : String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' })
+      return result * (comparisonSort.direction === 'asc' ? 1 : -1)
+    })
+  }, [chartEntries, comparisonSearch, comparisonSort])
+  const visibleComparisonRows = filteredComparisonRows.slice(0, visibleComparisonCount)
+
+  const trendSpanDays = useMemo(() => getTrendSpanDays(filteredRows), [filteredRows])
+  const recommendedTrendInterval = getRecommendedTrendInterval(trendSpanDays)
+  const availableTrendIntervals = useMemo(() => TREND_INTERVALS.map((interval) => ({
+    ...interval,
+    disabled: interval.key !== 'day' && trendSpanDays < interval.minimumDays,
+  })), [trendSpanDays])
+  const activeTrendInterval = availableTrendIntervals.find((interval) => interval.key === trendInterval && !interval.disabled)?.key
+    ?? recommendedTrendInterval
 
   const trendRows = useMemo(() => {
+    if (groupBy !== 'trend') return []
     const grouped = new Map()
     for (const row of filteredRows) {
-      const bucket = getTrendBucket(row.date, trendInterval === 'custom' ? 'day' : trendInterval)
+      const bucket = getTrendBucket(row.date, activeTrendInterval, trendSpanDays)
       if (!bucket) continue
       const point = grouped.get(bucket.key) ?? {
         ...bucket,
@@ -988,8 +1146,16 @@ function AppShell() {
       grouped.set(bucket.key, point)
     }
     return [...grouped.values()].sort((left, right) => left.key.localeCompare(right.key))
-  }, [filteredRows, trendInterval])
-  const trendSeries = useMemo(() => [
+  }, [activeTrendInterval, filteredRows, groupBy, trendSpanDays])
+  const sortedTrendRows = useMemo(() => [...trendRows].sort((left, right) => {
+    const a = getTrendSortValue(left, trendSort.key)
+    const b = getTrendSortValue(right, trendSort.key)
+    const result = typeof a === 'number' && typeof b === 'number'
+      ? a - b
+      : String(a ?? '').localeCompare(String(b ?? ''), undefined, { numeric: true, sensitivity: 'base' })
+    return result * (trendSort.direction === 'asc' ? 1 : -1)
+  }), [trendRows, trendSort])
+  const trendSeries = useMemo(() => groupBy !== 'trend' ? [] : [
     {
       key: 'CONFIGURATOR',
       label: 'Config',
@@ -1004,8 +1170,8 @@ function AppShell() {
       visible: trendUsageSelection.includes('MANUAL'),
       points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.count })),
     },
-  ], [trendRows, trendUsageSelection])
-  const trendValueSeries = useMemo(() => [
+  ], [groupBy, trendRows, trendUsageSelection])
+  const trendValueSeries = useMemo(() => groupBy !== 'trend' ? [] : [
     {
       key: 'CONFIGURATOR',
       label: 'Config',
@@ -1020,8 +1186,15 @@ function AppShell() {
       visible: trendUsageSelection.includes('MANUAL'),
       points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.convertedCount ? point.MANUAL.inr : Number.NaN })),
     },
-  ], [trendRows, trendUsageSelection])
+  ], [groupBy, trendRows, trendUsageSelection])
   const trendInsights = useMemo(() => {
+    if (groupBy !== 'trend') return {
+      configShare: 0,
+      valueShare: null,
+      countDifference: 0,
+      config: { count: 0, inr: 0, convertedCount: 0 },
+      manual: { count: 0, inr: 0, convertedCount: 0 },
+    }
     const totals = trendRows.reduce((result, point) => {
       for (const usage of ['CONFIGURATOR', 'MANUAL']) {
         result[usage].count += point[usage].count
@@ -1045,11 +1218,8 @@ function AppShell() {
       config: totals.CONFIGURATOR,
       manual: totals.MANUAL,
     }
-  }, [trendRows])
-  const trendIntervalLabel = trendInterval === 'custom'
-    ? `Custom range (${dateFrom ? formatDateLabel(dateFrom) : 'start'}${dateTo ? ` – ${formatDateLabel(dateTo)}` : ''})`
-    : TREND_INTERVALS.find((item) => item.key === trendInterval)?.label ?? 'Monthly'
-
+  }, [groupBy, trendRows])
+  const trendIntervalLabel = TREND_INTERVALS.find((item) => item.key === activeTrendInterval)?.label ?? 'Weekly'
   const countTotal = chartEntries.reduce((sum, entry) => sum + entry.count, 0)
   const inrTotal = chartEntries.reduce((sum, entry) => sum + entry.inr, 0)
   const dominantCountGroup = [...chartEntries].sort((left, right) => right.count - left.count)[0]
@@ -1080,7 +1250,7 @@ function AppShell() {
     try {
       const imported = await readWorkbookInWorker(file)
       try {
-        await saveWorkbook(file, imported.sheetName, imported.datasetType)
+        await saveWorkbook(file, imported.sheetName, imported.datasetType, imported)
       } catch (caught) {
         if (caught instanceof DOMException && caught.name === 'QuotaExceededError') {
           throw new Error(
@@ -1096,12 +1266,13 @@ function AppShell() {
         )
       }
 
-      const importedBounds = getDateBounds(imported.rows)
+      const importedBounds = imported.summaryTables?.dateBounds ?? getDateBounds(imported.rows)
       setRows(imported.rows)
       setDatasetType(imported.datasetType ?? 'quotation')
       setSummaryTables(imported.summaryTables ?? null)
       setRawDataRows(imported.sourceRows ?? imported.rows)
       setRawDataColumns(imported.sourceColumns ?? [])
+      setVisibleRawDataCount(100)
       setRawDataSearch('')
       setRawDataSort({ key: 'date', direction: 'desc' })
       setRawDataSlicers({
@@ -1110,11 +1281,7 @@ function AppShell() {
         currency: '',
       })
       setRawDataView('raw')
-      setSelections({
-        organizations: [...new Set(imported.rows.map((row) => row.salesOrganization))],
-        usages: [...new Set(imported.rows.map((row) => row.usage))],
-        currencies: [...new Set(imported.rows.map((row) => row.currency))],
-      })
+      setSelections(getWorkbookSelections(imported))
       setTrendUsageSelection(['CONFIGURATOR', 'MANUAL'])
       setDateFrom(importedBounds.min)
       setDateTo(importedBounds.min === importedBounds.max ? '' : importedBounds.max)
@@ -1123,7 +1290,6 @@ function AppShell() {
         size: file.size,
         sheet: imported.sheetName,
       })
-      setTableFilters({})
       setOutlierFilter('all')
       setQuery('')
       setStatus(
@@ -1153,25 +1319,40 @@ function AppShell() {
     setDateFrom(bounds.min)
     setDateTo(bounds.max === bounds.min ? '' : bounds.max)
     setQuery('')
-    setTableFilters({})
     setOutlierFilter('all')
     setTrendUsageSelection(['CONFIGURATOR', 'MANUAL'])
   }
 
   function downloadCsv() {
-    const blob = new Blob(['\ufeff', makeCsv(tableRows)], {
+    const rowsToExport = groupBy === 'trend' ? trendRows : reportSummary
+    const columns = groupBy === 'trend' ? [
+      ['Time bracket', (row) => row.label],
+      ['Config quotations', (row) => row.CONFIGURATOR.count],
+      ['Manual quotations', (row) => row.MANUAL.count],
+      ['Config value (INR)', (row) => row.CONFIGURATOR.inr],
+      ['Manual value (INR)', (row) => row.MANUAL.inr],
+    ] : QUOTATION_BREAKDOWN_COLUMNS
+    const blob = new Blob(['\ufeff', makeCsv(rowsToExport, columns)], {
       type: 'text/csv;charset=utf-8',
     })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = 'quotation-summary.csv'
+    anchor.download = `${groupBy}-quotation-report.csv`
     anchor.click()
     URL.revokeObjectURL(url)
   }
 
   async function downloadExcel() {
-    await exportRowsToExcel(tableRows, SUMMARY_EXPORT_COLUMNS, 'quotation-summary')
+    const rowsToExport = groupBy === 'trend' ? trendRows : reportSummary
+    const columns = groupBy === 'trend' ? [
+      ['Time bracket', (row) => row.label],
+      ['Config quotations', (row) => row.CONFIGURATOR.count],
+      ['Manual quotations', (row) => row.MANUAL.count],
+      ['Config value (INR)', (row) => row.CONFIGURATOR.inr],
+      ['Manual value (INR)', (row) => row.MANUAL.inr],
+    ] : QUOTATION_BREAKDOWN_COLUMNS
+    await exportRowsToExcel(rowsToExport, columns, `${groupBy}-quotation-report`)
   }
 
   async function clearLocalData() {
@@ -1190,6 +1371,7 @@ function AppShell() {
     setRows([])
     setRawDataRows([])
     setRawDataColumns([])
+    setVisibleRawDataCount(100)
     setRawDataSearch('')
     setRawDataSort({ key: 'date', direction: 'desc' })
     setRawDataSlicers({ salesOrganization: '', usage: '', currency: '' })
@@ -1199,9 +1381,8 @@ function AppShell() {
     setSummaryTables(null)
     setDateFrom('')
     setDateTo('')
-    setGroupBy('salesOrganization')
+    setGroupBy('salesOrganizationName')
     setQuery('')
-    setTableFilters({})
     setOutlierFilter('all')
     setPercentileTail(5)
     setFileInfo(null)
@@ -1289,40 +1470,18 @@ function AppShell() {
               </button>
             </>
           )}
-          <div className="theme-menu" ref={themeMenuRef}>
-            <button
-              aria-controls="theme-options"
-              aria-expanded={isThemeMenuOpen}
-              aria-haspopup="menu"
-              aria-label={`Color theme: ${theme}`}
-              className="theme-toggle"
-              onClick={() => setIsThemeMenuOpen((isOpen) => !isOpen)}
-              ref={themeButtonRef}
-              type="button"
-            >
-              <Icon name={theme === 'dark' ? 'moon' : 'sun'} size={17} />
-            </button>
-            {isThemeMenuOpen && (
-              <div className="theme-popover" id="theme-options" role="menu" aria-label="Color theme">
-                {['light', 'dark'].map((option) => (
-                  <button
-                    aria-checked={theme === option}
-                    className={`theme-option${theme === option ? ' is-selected' : ''}`}
-                    key={option}
-                    onClick={() => {
-                      setTheme(option)
-                      setIsThemeMenuOpen(false)
-                    }}
-                    role="menuitemradio"
-                    type="button"
-                  >
-                    <Icon name={option === 'dark' ? 'moon' : 'sun'} size={16} />
-                    <span>{option === 'dark' ? 'Dark mode' : 'Light mode'}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <button
+            aria-checked={theme === 'dark'}
+            aria-label={`Dark mode ${theme === 'dark' ? 'on' : 'off'}`}
+            className={`theme-switch${theme === 'dark' ? ' is-dark' : ''}`}
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            role="switch"
+            type="button"
+          >
+            <Icon name="sun" size={15} />
+            <span aria-hidden="true" className="theme-switch-track"><span /></span>
+            <Icon name="moon" size={15} />
+          </button>
           <div className="local-badge"><span /> Saved locally</div>
         </div>
       </header>
@@ -1418,7 +1577,7 @@ function AppShell() {
                   <section aria-labelledby="report-selection-title" className="report-selection">
                     <div className="report-selection-heading">
                       <div>
-                        <div className="eyebrow"><span className="eyebrow-line" /> REPORT LIBRARY</div>
+                        <div className="eyebrow"><span className="eyebrow-line" /> Report library</div>
                         <h1 id="report-selection-title">Choose a report</h1>
                         <p>
                           Explore different views of {fileInfo?.name || 'your quotation workbook'}.
@@ -1438,14 +1597,14 @@ function AppShell() {
                           key={report.id}
                           onClick={() => {
                             setGroupBy(report.groupBy)
-                            if (report.id === 'trend') setTrendInterval('month')
+                            if (report.id === 'trend') setTrendInterval(null)
                             navigate('/dashboard')
                           }}
                           type="button"
                         >
                           <span className="report-card-topline">
                             <span className="report-card-icon"><Icon name={report.icon} size={20} /></span>
-                            <span className="report-card-label">REPORT 0{index + 1}</span>
+                            <span className="report-card-label">Report {String(index + 1).padStart(2, '0')}</span>
                           </span>
                           <span className="report-card-copy">
                             <strong>{report.title}</strong>
@@ -1462,11 +1621,9 @@ function AppShell() {
                           </span>
                           <span className="report-required-columns">
                             <strong>Required columns</strong>
-                            {report.id === 'overview'
-                              ? 'Sales Organization, Usage group, Currency, Net Value (Header)'
-                              : report.id === 'usage'
-                                ? 'Usage group, Sales Organization, Currency, Net Value (Header)'
-                                : 'Currency, Net Value (Header), Sales Organization'}
+                            <span>{QUOTATION_REQUIRED_COLUMNS}</span>
+                            <strong>Breakdown field</strong>
+                            <span>{REPORT_DIMENSION_COLUMNS[report.groupBy] ?? 'Quotation dimension'}</span>
                           </span>
                           <span className="report-card-action">
                             Open report <Icon name="arrow" size={16} />
@@ -1505,26 +1662,23 @@ function AppShell() {
               element={
                 datasetType !== 'procurement' && rows.length ? (
                   <>
+                    <ReportNavigation
+                      activeId={groupBy}
+                      onSelect={(item) => setGroupBy(item.id)}
+                      reports={REPORT_CARDS.map((report) => ({ id: report.groupBy, title: report.title }))}
+                    />
                     <section className="page-heading">
               <div>
                 <div className="eyebrow">
                   <span className="eyebrow-line" />
                   {groupBy === 'trend'
-                    ? 'TIME SERIES'
-                    : groupBy === 'usage'
-                    ? 'USAGE ANALYSIS'
-                    : groupBy === 'currency'
-                      ? 'CURRENCY ANALYSIS'
-                      : 'SALES OVERVIEW'}
+                    ? 'Time series'
+                    : `${quotationReportTitle(groupBy)} report`}
                 </div>
                 <h1>
                   {groupBy === 'trend'
                     ? 'Quotation trend analysis'
-                    : groupBy === 'usage'
-                    ? 'Config Usage Dashboard'
-                    : groupBy === 'currency'
-                      ? 'Currency breakdown'
-                      : 'Quotation overview'}
+                    : quotationReportTitle(groupBy)}
                 </h1>
                 <p className="page-subtitle">
                   {dateFrom
@@ -1571,11 +1725,11 @@ function AppShell() {
                   onExportCsv={downloadCsv}
                   onExportExcel={downloadExcel}
                   onExportHtml={() => exportReportsToHtml({
-                    title: groupBy === 'trend' ? 'Quotation trend analysis' : groupBy === 'usage' ? 'Config Usage Dashboard' : groupBy === 'currency' ? 'Currency breakdown' : 'Quotation overview',
+                    title: groupBy === 'trend' ? 'Quotation trend analysis' : quotationReportTitle(groupBy),
                     subtitle: `${fileInfo?.name || 'Quotation workbook'} · ${filteredRows.length.toLocaleString('en-IN')} quotations matching the current filters.`,
                     fileName: 'quotation-report',
                     dashboard: {
-                      reportTitle: groupBy === 'trend' ? 'Quotation trend analysis' : groupBy === 'usage' ? 'Config Usage Dashboard' : groupBy === 'currency' ? 'Currency breakdown' : 'Quotation overview',
+                      reportTitle: groupBy === 'trend' ? 'Quotation trend analysis' : quotationReportTitle(groupBy),
                       category: 'Quotation analysis',
                       number: REPORT_CARDS.findIndex((item) => item.groupBy === groupBy) + 1,
                       filters: [
@@ -1615,17 +1769,17 @@ function AppShell() {
                       insights: groupBy === 'trend'
                         ? []
                         : [
-                          `${formatCount(kpis.quotations)} quotations match the active filters; ${formatCount(kpis.organizations)} sales organizations are represented.`,
-                          `${formatCount(kpis.convertedCount)} quotations (${conversionCoverage.toFixed(1)}%) have a configured INR conversion.`,
-                          ...(dominantCountGroup ? [`Largest volume group: ${dominantCountGroup.label}, ${formatCount(dominantCountGroup.count)} quotations.`] : []),
-                          ...(dominantValueGroup ? [`Largest converted value group: ${dominantValueGroup.label}, ${formatMoney(dominantValueGroup.inr, 'INR')}.`] : []),
+                          `${formatCount(kpis.quotations)} unique quotations match the active filters for ${CHART_GROUPS.find((group) => group.key === groupBy)?.label.toLowerCase() ?? 'this report'}.`,
+                          `${formatCount(kpis.convertedCount)} quotations (${conversionCoverage.toFixed(1)}%) contribute to converted INR value; the remainder have currencies without a configured rate.`,
+                          ...(dominantCountGroup ? [`Highest quotation volume: ${dominantCountGroup.label} with ${formatCount(dominantCountGroup.count)} quotations (${countTotal ? (dominantCountGroup.count / countTotal * 100).toFixed(1) : '0.0'}% of the visible total).`] : []),
+                          ...(dominantValueGroup ? [`Highest converted value: ${dominantValueGroup.label} at ${formatMoney(dominantValueGroup.inr, 'INR')}.`] : []),
                         ],
                       decisionHelpers: quotationDecisionHelpers,
-                      tableTitle: groupBy === 'trend' ? 'Trend data' : 'Original-currency breakdown',
+                      tableTitle: groupBy === 'trend' ? 'Quotation trend by time bracket' : `${quotationReportTitle(groupBy)} breakdown`,
                       tableDescription: groupBy === 'trend'
                         ? `${trendRows.length.toLocaleString('en-IN')} ${trendIntervalLabel.toLowerCase()} brackets · Config and Manual compared side by side`
-                        : `${tableRows.length.toLocaleString('en-IN')} rows · totals are separated by currency.`,
-                      rows: groupBy === 'trend' ? trendRows : tableRows,
+                        : `${reportSummary.length.toLocaleString('en-IN')} ${CHART_GROUPS.find((group) => group.key === groupBy)?.label.toLowerCase() ?? 'report'} groups · values include converted INR only.`,
+                      rows: groupBy === 'trend' ? trendRows : reportSummary,
                       snapshot: {
                         type: 'quotations',
                         rows,
@@ -1635,7 +1789,7 @@ function AppShell() {
                         groupBy,
                         outlierFilter,
                         percentileTail,
-                        trendInterval,
+                        trendInterval: activeTrendInterval,
                         trendUsageSelection,
                         options,
                       },
@@ -1645,11 +1799,11 @@ function AppShell() {
                         { label: 'Manual quotations', getValue: (row) => formatCount(row.MANUAL.count) },
                         { label: 'Config value (INR)', getValue: (row) => row.CONFIGURATOR.convertedCount ? formatMoney(row.CONFIGURATOR.inr, 'INR') : '—' },
                         { label: 'Manual value (INR)', getValue: (row) => row.MANUAL.convertedCount ? formatMoney(row.MANUAL.inr, 'INR') : '—' },
-                      ] : SUMMARY_EXPORT_COLUMNS.map(([label, getValue]) => ({
+                      ] : QUOTATION_BREAKDOWN_COLUMNS.map(([label, getValue]) => ({
                         label,
-                        getValue: (row) => label === 'Total value (original currency)' ? formatExactMoney(getValue(row), row.currency) : getValue(row),
+                        getValue,
                       })),
-                      rowLink: groupBy === 'trend' ? null : (row) => `${window.location.origin}/dashboard?groupBy=${encodeURIComponent(groupBy)}#${encodeURIComponent(row.salesOrganization || row.usage || row.currency || '')}`,
+                      rowLink: groupBy === 'trend' ? null : (row) => `${window.location.origin}/dashboard?groupBy=${encodeURIComponent(groupBy)}#${encodeURIComponent(row.label || '')}`,
                       metrics: [],
                     },
                   })}
@@ -1766,9 +1920,12 @@ function AppShell() {
                 {groupBy === 'trend' && (
                   <label className="outlier-filter trend-interval-control">
                     <span>Time bracket</span>
-                    <select onChange={(event) => setTrendInterval(event.target.value)} value={trendInterval}>
-                      {TREND_INTERVALS.map((interval) => <option key={interval.key} value={interval.key}>{interval.label}</option>)}
+                    <select aria-label="Time bracket" onChange={(event) => setTrendInterval(event.target.value)} value={activeTrendInterval}>
+                      {availableTrendIntervals.map((interval) => <option disabled={interval.disabled} key={interval.key} value={interval.key}>
+                        {interval.label}{interval.disabled ? ` (requires ${interval.minimumDays}+ days)` : ''}
+                      </option>)}
                     </select>
+                    <small>Suggested: {TREND_INTERVALS.find((interval) => interval.key === recommendedTrendInterval)?.label.toLowerCase()} for {trendSpanDays ? `${formatCount(trendSpanDays)} days of dated data` : 'the available dates'}.</small>
                   </label>
                 )}
                 <label className="outlier-filter">
@@ -1836,13 +1993,13 @@ function AppShell() {
 
             <section aria-label="Quotation totals" className="kpi-grid">
               <article className="panel kpi-card">
-                <div className="kpi-topline"><span>QUOTATIONS</span><span className="kpi-icon kpi-blue"><Icon name="file" /></span></div>
+                <div className="kpi-topline"><span>Quotations</span><span className="kpi-icon kpi-blue"><Icon name="file" /></span></div>
                 <strong>{formatCount(kpis.quotations)}</strong>
                 <small>Unique SAP sales documents</small>
                 <div className="kpi-accent accent-blue" />
               </article>
               <article className="panel kpi-card">
-                <div className="kpi-topline"><span>TOTAL VALUE · INR</span><span className="kpi-icon kpi-green">₹</span></div>
+                <div className="kpi-topline"><span>Total value · INR</span><span className="kpi-icon kpi-green">₹</span></div>
                 <strong title={`₹${kpis.totalInr.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}>
                   {formatMoney(kpis.totalInr, 'INR')}
                 </strong>
@@ -1853,7 +2010,7 @@ function AppShell() {
                 <div className="kpi-accent accent-green" />
               </article>
               <article className="panel kpi-card">
-                <div className="kpi-topline"><span>SALES ORGANIZATIONS</span><span className="kpi-icon kpi-violet"><Icon name="chart" /></span></div>
+                <div className="kpi-topline"><span>Sales organizations</span><span className="kpi-icon kpi-violet"><Icon name="chart" /></span></div>
                 <strong>{formatCount(kpis.organizations)}</strong>
                 <small>Distinct organizations in selection</small>
                 <div className="kpi-accent accent-violet" />
@@ -1889,14 +2046,24 @@ function AppShell() {
                 </section>
                 <section className="panel table-panel trend-table-panel">
                   <div className="table-heading">
-                    <div><h2>Trend data</h2><p>One row per {TREND_INTERVALS.find((item) => item.key === trendInterval)?.label.toLowerCase()} bracket</p></div>
+                    <div><h2>Trend data</h2><p>One row per {trendIntervalLabel.toLowerCase()} bracket</p></div>
                     <span className="result-pill">{formatCount(trendRows.length)} brackets</span>
                   </div>
                   <div className="table-scroll">
                     <table>
-                      <thead><tr><th>Time bracket</th><th className="align-right">Config quotations</th><th className="align-right">Manual quotations</th><th className="align-right">Config value (INR)</th><th className="align-right">Manual value (INR)</th></tr></thead>
+                      <thead><tr>{[
+                        ['key', 'Time bracket', false],
+                        ['configCount', 'Config quotations', true],
+                        ['manualCount', 'Manual quotations', true],
+                        ['configValue', 'Config value (INR)', true],
+                        ['manualValue', 'Manual value (INR)', true],
+                      ].map(([key, label, numeric]) => <th className={numeric ? 'align-right' : ''} key={key}>
+                        <button aria-label={`Sort ${label} ${trendSort.key === key && trendSort.direction === 'asc' ? 'descending' : 'ascending'}`} className="sort-header" onClick={() => setTrendSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))} type="button">
+                          {label}<span className="sort-indicator">{trendSort.key === key ? (trendSort.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                        </button>
+                      </th>)}</tr></thead>
                       <tbody>
-                        {trendRows.map((point) => <tr key={point.key}><td>{point.label}</td><td className="align-right">{formatCount(point.CONFIGURATOR.count)}</td><td className="align-right">{formatCount(point.MANUAL.count)}</td><td className="align-right">{point.CONFIGURATOR.convertedCount ? formatMoney(point.CONFIGURATOR.inr, 'INR') : '—'}</td><td className="align-right">{point.MANUAL.convertedCount ? formatMoney(point.MANUAL.inr, 'INR') : '—'}</td></tr>)}
+                        {sortedTrendRows.map((point) => <tr key={point.key}><td>{point.label}</td><td className="align-right">{formatCount(point.CONFIGURATOR.count)}</td><td className="align-right">{formatCount(point.MANUAL.count)}</td><td className="align-right">{point.CONFIGURATOR.convertedCount ? formatMoney(point.CONFIGURATOR.inr, 'INR') : '—'}</td><td className="align-right">{point.MANUAL.convertedCount ? formatMoney(point.MANUAL.inr, 'INR') : '—'}</td></tr>)}
                         {!trendRows.length && <tr><td className="empty-table" colSpan="5">No dated quotations match these filters.</td></tr>}
                       </tbody>
                     </table>
@@ -1906,17 +2073,9 @@ function AppShell() {
               </>
             ) : <section className="charts-section">
               <div className="section-heading">
-                <div><h2>Performance breakdown</h2><p>Quotation volume and converted value across your selection</p></div>
-                <div className="chart-controls">
-                  <label className="group-select">
-                    <span>Group charts by</span>
-                    <select onChange={(event) => setGroupBy(event.target.value)} value={groupBy}>
-                      {CHART_GROUPS.map((group) => <option key={group.key} value={group.key}>{group.label}</option>)}
-                    </select>
-                  </label>
-                </div>
+                <div><h2>{REPORT_CARDS.find((report) => report.groupBy === groupBy)?.title ?? 'Quotation report'}</h2><p>{REPORT_CARDS.find((report) => report.groupBy === groupBy)?.description ?? 'Quotation volume and converted value for the selected indicator'}</p></div>
               </div>
-              <div className="chart-grid">
+              <div className="chart-grid" aria-busy="false" aria-live="polite">
                 <PieChart
                   entries={chartEntries}
                   groupLabel={CHART_GROUPS.find((group) => group.key === groupBy)?.label}
@@ -1926,117 +2085,56 @@ function AppShell() {
                   entries={chartEntries}
                   groupLabel={CHART_GROUPS.find((group) => group.key === groupBy)?.label}
                   metric="value"
-                />
-                <MetricChart
-                  entries={chartEntries.map((entry) => ({ label: entry.label, value: entry.count }))}
-                  id="count-chart"
-                  metric="count"
-                  subtitle={`Share of quotations by ${CHART_GROUPS.find((group) => group.key === groupBy)?.label}`}
-                  title="Quotation volume"
-                  total={countTotal}
-                />
-                <MetricChart
-                  entries={chartEntries.map((entry) => ({ label: entry.label, value: entry.inr }))}
-                  id="value-chart"
-                  metric="value"
-                  subtitle={`INR converted value by ${CHART_GROUPS.find((group) => group.key === groupBy)?.label}`}
-                  title="Quotation value"
-                  total={inrTotal}
                 />
               </div>
             </section>}
 
             {groupBy !== 'trend' && <section className="panel table-panel">
               <div className="table-heading">
-                <div><h2>Original-currency breakdown</h2><p>Totals stay separated by currency · exact values shown on hover</p></div>
+                <div><h2>Config vs Manual comparison</h2><p>{CHART_GROUPS.find((group) => group.key === groupBy)?.label} · quotation count and header value</p></div>
                 <div className="table-tools">
-                  <label className="search-box">
-                    <Icon name="search" size={16} />
-                    <input
-                      aria-label="Search summary"
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Search breakdown"
-                      type="search"
-                      value={query}
-                    />
-                  </label>
-                  <span className="result-pill">{formatCount(tableRows.length)} rows</span>
+                    <label className="summary-key-search">
+                      <span className="sr-only">Search {CHART_GROUPS.find((group) => group.key === groupBy)?.label} summary</span>
+                      <input aria-label={`Search ${CHART_GROUPS.find((group) => group.key === groupBy)?.label} summary`} onChange={(event) => {
+                        setComparisonSearch(event.target.value)
+                        setVisibleComparisonCount(50)
+                      }} placeholder={`Search ${CHART_GROUPS.find((group) => group.key === groupBy)?.label.toLowerCase()}`} type="search" value={comparisonSearch} />
+                    </label>
+                    <span className="result-pill">{formatCount(visibleComparisonRows.length)} shown</span>
                 </div>
               </div>
-              <div className="table-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      {[
-                        ['salesOrganization', 'Sales Organization'],
-                        ['usage', 'Usage group'],
-                        ['currency', 'Currency'],
-                        ['count', 'Quotations'],
-                        ['value', 'Total value'],
-                      ].map(([key, label]) => {
-                        const values = [...new Set(summary.map((row) =>
-                          key === 'count'
-                            ? formatCount(row.count)
-                            : key === 'value'
-                              ? formatMoney(row.value, row.currency)
-                              : String(row[key]),
-                        ))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
-                        return (
-                          <th key={key} className={key === 'count' || key === 'value' ? 'align-right' : ''}>
-                            <span>{label}</span>
-                            <select
-                              aria-label={`Filter table by ${label}`}
-                              onChange={(event) =>
-                                setTableFilters((current) => ({ ...current, [key]: event.target.value }))
-                              }
-                              value={tableFilters[key] ?? ''}
-                            >
-                              <option value="">All</option>
-                              {values.map((value) => <option key={value} value={value}>{value}</option>)}
-                            </select>
-                          </th>
-                        )
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tableRows.map((row) => (
-                      <tr key={`${row.salesOrganization}-${row.usage}-${row.currency}`}>
-                        <td><span className="org-cell"><i />{row.salesOrganization}</span></td>
-                        <td><span className={`usage-pill ${row.usage.toLowerCase()}`}>{row.usage}</span></td>
-                        <td><span className="currency-cell">{row.currency}</span></td>
-                        <td className="align-right">{formatCount(row.count)}</td>
-                        <td
-                          className="align-right value-cell"
-                          title={formatExactMoney(row.value, row.currency)}
-                        >
-                          {formatMoney(row.value, row.currency)}
-                        </td>
-                      </tr>
-                    ))}
-                    {tableRows.length === 0 && (
-                      <tr><td className="empty-table" colSpan="5">No summary rows match these filters.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <div className="table-footer">
-                <span><i className="footer-dot" /> One row per Sales document · repeated item lines excluded</span>
-                <span>INR amounts shown in Lacs / Cr <b>ⓘ</b></span>
-              </div>
+              <div className="table-scroll"><table>
+                <thead><tr>{[
+                  ['label', CHART_GROUPS.find((group) => group.key === groupBy)?.label ?? 'Report group', false],
+                  ['configCount', 'Config quotations', true],
+                  ['manualCount', 'Manual quotations', true],
+                  ['configValue', 'Config value (INR)', true],
+                  ['manualValue', 'Manual value (INR)', true],
+                ].map(([key, label, numeric]) => <th className={numeric ? 'align-right' : ''} key={key}>
+                  <button aria-label={`Sort ${label} ${comparisonSort.key === key && comparisonSort.direction === 'asc' ? 'descending' : 'ascending'}`} className="sort-header" onClick={() => setComparisonSort((current) => ({ key, direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc' }))} type="button">
+                    {label}<span className="sort-indicator">{comparisonSort.key === key ? (comparisonSort.direction === 'asc' ? '↑' : '↓') : '↕'}</span>
+                  </button>
+                </th>)}</tr></thead>
+                <tbody>{visibleComparisonRows.map((entry) => (
+                  <tr key={entry.label}><td>{entry.label}</td><td className="align-right">{formatCount(entry.CONFIGURATOR.count)}</td><td className="align-right">{formatCount(entry.MANUAL.count)}</td><td className="align-right">{formatMoney(entry.CONFIGURATOR.inr, 'INR')}</td><td className="align-right">{formatMoney(entry.MANUAL.inr, 'INR')}</td></tr>
+                ))}{!visibleComparisonRows.length && <tr><td className="empty-table" colSpan="5">No quotations match these filters.</td></tr>}</tbody>
+              </table></div>
+              {visibleComparisonCount < filteredComparisonRows.length && <div className="table-more"><span>Showing {formatCount(visibleComparisonRows.length)} of {formatCount(filteredComparisonRows.length)} groups</span><button className="button button-outline" onClick={() => setVisibleComparisonCount((count) => count + 50)} type="button">Show 50 more</button></div>}
             </section>}
+
             <ReportInsightsSummary
+              reportTitle={groupBy === 'trend' ? 'Quotation trend analysis' : quotationReportTitle(groupBy)}
               chartRules={groupBy === 'trend'
                 ? [
                   `The trend charts use ${trendIntervalLabel.toLowerCase()} date buckets and compare Config with Manual quotations.`,
                   'Quotation volume counts unique sales documents; value charts sum only rows with a configured INR conversion.',
                   'Config share and volume difference use the filtered time-series totals; value share uses converted INR totals only.',
-                  'For more than 8 time buckets, the line chart labels 4 dates while retaining every plotted point. Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
+                  'Every time bucket remains plotted; date labels are shortened and spaced to fit the chart width. Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
                 ]
                 : [
                   `Charts group the filtered quotations by ${CHART_GROUPS.find((group) => group.key === groupBy)?.label ?? groupBy}.`,
                   'Count charts show unique sales documents; value charts show converted INR amounts and omit unconverted currencies.',
-                  'Pie percentages use the visible chart total as their denominator; the currency table keeps original-currency totals separate.',
+                  'Pie percentages use the visible chart total as their denominator; value charts show converted INR and exclude currencies without a configured rate.',
                   'Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
                 ]}
               insights={groupBy === 'trend'
@@ -2046,9 +2144,10 @@ function AppShell() {
                   `Config share of converted value: ${trendInsights.valueShare == null ? 'unavailable' : `${trendInsights.valueShare.toFixed(1)}%`}.`,
                 ]
                 : [
-                  `${formatCount(kpis.quotations)} unique quotations match the active filters.`,
-                  `${formatCount(kpis.convertedCount)} quotations contribute to the INR total; currencies without a configured rate are excluded from that total.`,
-                  `${formatCount(kpis.organizations)} distinct sales organizations are represented.`,
+                  `${formatCount(kpis.quotations)} unique quotations match the active filters for ${CHART_GROUPS.find((group) => group.key === groupBy)?.label.toLowerCase() ?? 'this report'}.`,
+                  `${formatCount(kpis.convertedCount)} quotations (${conversionCoverage.toFixed(1)}%) contribute to converted INR value; currencies without a configured rate are excluded.`,
+                  ...(dominantCountGroup ? [`Highest quotation volume: ${dominantCountGroup.label} with ${formatCount(dominantCountGroup.count)} quotations (${countTotal ? (dominantCountGroup.count / countTotal * 100).toFixed(1) : '0.0'}% of the visible total).`] : ['No report groups are available for the current filters.']),
+                  ...(dominantValueGroup ? [`Highest converted value: ${dominantValueGroup.label} at ${formatMoney(dominantValueGroup.inr, 'INR')}.`] : []),
                 ]}
               decisionHelpers={quotationDecisionHelpers}
               kpis={[
@@ -2057,6 +2156,12 @@ function AppShell() {
                 { label: 'Sales organizations', definition: 'Distinct sales organizations among the filtered quotations.' },
               ]}
             />
+                    <ReportNavigation
+                      activeId={groupBy}
+                      onSelect={(item) => setGroupBy(item.id)}
+                      placement="bottom"
+                      reports={REPORT_CARDS.map((report) => ({ id: report.groupBy, title: report.title }))}
+                    />
                   </>
                 ) : (
                   <Navigate to="/" replace />
@@ -2228,7 +2333,7 @@ function AppShell() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(rawDataView === 'raw' || datasetType === 'procurement' ? visibleRawRows : filteredRows).map((row, index) => (
+                          {visibleDataTableRows.map((row, index) => (
                             <tr key={rawDataView === 'raw' ? `${row.document || 'row'}-${row.rowNumber ?? index}` : `${row.document}-${row.salesOrganization}-${row.usage}-${row.currency}-${index}`}>
                               {displayedDataColumns.map((column) => (
                                 <td key={column.key}>
@@ -2237,12 +2342,18 @@ function AppShell() {
                               ))}
                             </tr>
                           ))}
-                          {((rawDataView === 'raw' || datasetType === 'procurement' ? visibleRawRows : filteredRows).length === 0) && (
+                          {rawDataTableRows.length === 0 && (
                             <tr><td className="empty-table" colSpan={displayedDataColumns.length}>No matching rows found.</td></tr>
                           )}
                         </tbody>
                       </table>
                     </div>
+                    {visibleDataTableRows.length < rawDataTableRows.length && (
+                      <div className="table-more">
+                        <span>Showing {formatCount(visibleDataTableRows.length)} of {formatCount(rawDataTableRows.length)} rows</span>
+                        <button className="button button-outline" onClick={() => setVisibleRawDataCount((count) => count + 100)} type="button">Show 100 more</button>
+                      </div>
+                    )}
                   </section>
                 ) : (
                   <Navigate to="/" replace />
@@ -2279,6 +2390,15 @@ function AppShell() {
         onClose={() => setIsPrintPreviewOpen(false)}
         open={isPrintPreviewOpen}
       />
+      {showBackToTop && <button
+        aria-label="Back to top"
+        className="back-to-top"
+        onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+        title="Back to top"
+        type="button"
+      >
+        <span aria-hidden="true">↑</span>
+      </button>}
     </div>
   )
 }

@@ -21,7 +21,12 @@ const createFieldSetter = (set, field) => (value) =>
     [field]: typeof value === 'function' ? value(state[field]) : value,
   }))
 
-const QUOTATION_REPORTS = new Set(['salesOrganization', 'usage', 'currency', 'trend'])
+const QUOTATION_REPORTS = new Set([
+  'salesOrganization', 'salesOrganizationName', 'salesDocumentTypeDescription', 'soldToPartyName', 'salesOffice',
+  'salesGroup', 'salesDistrictName', 'salesDistrict', 'distributionChannelName', 'distributionChannel', 'divisionName', 'division',
+  'materialDescription', 'material', 'plant', 'overallStatusDescription', 'referenceStatusDescription',
+  'orderReasonDescription', 'rejectionReasonDescription', 'createdBy', 'usage', 'currency', 'trend',
+])
 
 export const useAppStore = create(persist((set) => ({
   isRestoring: true,
@@ -31,9 +36,8 @@ export const useAppStore = create(persist((set) => ({
   selections: initialSelections(),
   dateFrom: '',
   dateTo: '',
-  groupBy: 'salesOrganization',
+  groupBy: 'salesOrganizationName',
   query: '',
-  tableFilters: {},
   outlierFilter: 'all',
   percentileTail: 5,
   theme: getInitialTheme(),
@@ -52,7 +56,6 @@ export const useAppStore = create(persist((set) => ({
   setDateTo: createFieldSetter(set, 'dateTo'),
   setGroupBy: createFieldSetter(set, 'groupBy'),
   setQuery: createFieldSetter(set, 'query'),
-  setTableFilters: createFieldSetter(set, 'tableFilters'),
   setOutlierFilter: createFieldSetter(set, 'outlierFilter'),
   setPercentileTail: createFieldSetter(set, 'percentileTail'),
   setTheme: (theme) => {
@@ -75,8 +78,10 @@ export const useAppStore = create(persist((set) => ({
   partialize: (state) => ({ groupBy: state.groupBy }),
   merge: (persistedState, currentState) => ({
     ...currentState,
-    groupBy: QUOTATION_REPORTS.has(persistedState?.groupBy)
-      ? persistedState.groupBy
-      : currentState.groupBy,
+    groupBy: persistedState?.groupBy === 'salesOrganization'
+      ? 'salesOrganizationName'
+      : QUOTATION_REPORTS.has(persistedState?.groupBy)
+        ? persistedState.groupBy
+        : currentState.groupBy,
   }),
 }))

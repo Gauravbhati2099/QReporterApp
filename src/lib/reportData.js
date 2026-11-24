@@ -1,9 +1,13 @@
 export function getDateBounds(rows) {
-  const dates = rows.map((row) => row.date).filter(Boolean).sort()
-  return {
-    min: dates[0] ?? '',
-    max: dates.at(-1) ?? '',
+  let min = ''
+  let max = ''
+  for (const row of rows) {
+    const date = row.date
+    if (!date) continue
+    if (!min || date < min) min = date
+    if (!max || date > max) max = date
   }
+  return { min, max }
 }
 
 export function getSummary(rows) {
@@ -27,6 +31,23 @@ export function getSummary(rows) {
       a.usage.localeCompare(b.usage) ||
       a.currency.localeCompare(b.currency),
   )
+}
+
+export function buildQuotationSummaryTables(rows) {
+  const summary = getSummary(rows)
+  return {
+    quotations: summary,
+    dateBounds: getDateBounds(rows),
+    options: {
+      organizations: [...new Set(rows.map((row) => row.salesOrganization))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+      usages: [...new Set(rows.map((row) => row.usage))].sort(),
+      currencies: [...new Set(rows.map((row) => row.currency))].sort(),
+    },
+    outliers: {
+      iqr: [...getOutlierRows(rows)].map((row) => row.document),
+      mad: [...getModifiedZScoreOutlierRows(rows)].map((row) => row.document),
+    },
+  }
 }
 
 function getQuantile(sortedValues, probability) {
