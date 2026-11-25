@@ -1565,6 +1565,43 @@
   gap: 16px;
 }
 
+.trend-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.trend-measure-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-soft);
+}
+
+.trend-measure-toggle button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.trend-measure-toggle button.is-active {
+  color: var(--text-strong);
+  background: var(--surface);
+  box-shadow: 0 1px 3px #1825411a;
+}
+
 .trend-chart-panel {
   min-width: 0;
   padding: 20px;
@@ -2388,6 +2425,12 @@
   background: #fffafa;
 }
 
+.toast-info {
+  border-color: #cddcf5;
+  color: #34558b;
+  background: #f5f8ff;
+}
+
 .toast-icon {
   display: grid;
   width: 22px;
@@ -2401,6 +2444,10 @@
 
 .toast-error .toast-icon {
   background: #cc5c5c;
+}
+
+.toast-info .toast-icon {
+  background: #5278b8;
 }
 
 .toast button {

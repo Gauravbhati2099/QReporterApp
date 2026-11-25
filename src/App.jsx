@@ -279,8 +279,7 @@ const REPORT_DIMENSION_COLUMNS = {
 const quotationReportTitle = (key) => REPORT_CARDS.find((report) => report.groupBy === key)?.title ?? 'Quotation report'
 
 const TREND_INTERVALS = [
-  { key: 'day', label: 'Daily', minimumDays: 1 },
-  { key: 'week', label: 'Weekly', minimumDays: 8 },
+  { key: 'week', label: 'Weekly', minimumDays: 1 },
   { key: 'month', label: 'Monthly', minimumDays: 32 },
   { key: 'quarter', label: 'Quarterly', minimumDays: 93 },
   { key: 'year', label: 'Yearly', minimumDays: 366 },
@@ -295,7 +294,6 @@ function getTrendSpanDays(rows) {
 }
 
 function getRecommendedTrendInterval(spanDays) {
-  if (spanDays <= 14) return 'day'
   if (spanDays <= 90) return 'week'
   if (spanDays <= 730) return 'month'
   if (spanDays <= 1825) return 'quarter'
@@ -306,10 +304,6 @@ function getTrendBucket(dateValue, interval, spanDays) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateValue ?? ''))) return null
   const [year, month, day] = dateValue.split('-').map(Number)
   const date = new Date(Date.UTC(year, month - 1, day))
-  if (interval === 'day') {
-    const axisLabel = date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', ...(spanDays > 365 ? { year: '2-digit' } : {}), timeZone: 'UTC' })
-    return { key: dateValue, label: formatDateLabel(dateValue), axisLabel }
-  }
   if (interval === 'week') {
     const mondayOffset = (date.getUTCDay() + 6) % 7
     date.setUTCDate(date.getUTCDate() - mondayOffset)
@@ -385,7 +379,7 @@ function UsageTrendChart({ title, subtitle, series, formatValue }) {
                 y: inset.top + plotHeight - (maximum ? point.value / maximum : 0) * plotHeight,
               }] : [])
               const path = validPoints.map((point, index) => `${index ? 'L' : 'M'} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(' ')
-              return <g key={item.key}><path d={path} fill="none" stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />{validPoints.map((point) => <circle cx={point.x} cy={point.y} fill={item.color} key={point.key} r="4"><title>{`${item.label} · ${point.label}: ${formatValue(point.value)}`}</title></circle>)}</g>
+              return <g key={item.key}><path d={path} fill="none" stroke={item.color} strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />{validPoints.map((point) => <circle aria-label={`${item.label}, ${point.label}: ${formatValue(point.value)}`} cx={point.x} cy={point.y} fill={item.color} key={point.key} r="6" stroke="var(--surface)" strokeWidth="2"><title>{`${item.label} · ${point.label} — ${formatValue(point.value)}`}</title></circle>)}</g>
             })}
             {labelIndexes.map((index) => {
               const item = series.find((entry) => entry.points[index])
@@ -413,6 +407,7 @@ function Icon({ name, size = 18 }) {
     moon: <><path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z" /></>,
     present: <><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3" /><path d="M8 12h8m-4-4v8" /></>,
     check: <><path d="m5 12 4 4L19 6" /></>,
+    info: <><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></>,
     close: <><path d="m18 6-12 12M6 6l12 12" /></>,
     arrow: <><path d="M5 12h14m-7-7 7 7-7 7" /></>,
   }
@@ -786,6 +781,7 @@ function AppShell() {
   const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false)
   const [showBackToTop, setShowBackToTop] = useState(false)
   const [trendInterval, setTrendInterval] = useState(null)
+  const [trendMetricMode, setTrendMetricMode] = useState('count')
   const [trendUsageSelection, setTrendUsageSelection] = useState(['CONFIGURATOR', 'MANUAL'])
   const [selectedSteps, setSelectedSteps] = useState(() => PREPROCESSING_STEPS.map((step) => step.id))
   const [rawDataRows, setRawDataRows] = useState([])
@@ -838,6 +834,15 @@ function AppShell() {
   const setIsReading = useAppStore((state) => state.setIsReading)
   const setDragging = useAppStore((state) => state.setDragging)
   const setIsPresenting = useAppStore((state) => state.setIsPresenting)
+
+  useEffect(() => {
+    if (!status && !error) return undefined
+    const notificationTimer = window.setTimeout(() => {
+      setStatus('')
+      setError('')
+    }, 10_000)
+    return () => window.clearTimeout(notificationTimer)
+  }, [error, setError, setStatus, status])
 
   useEffect(() => {
     const updateBackToTopVisibility = () => {
@@ -1121,7 +1126,7 @@ function AppShell() {
   const recommendedTrendInterval = getRecommendedTrendInterval(trendSpanDays)
   const availableTrendIntervals = useMemo(() => TREND_INTERVALS.map((interval) => ({
     ...interval,
-    disabled: interval.key !== 'day' && trendSpanDays < interval.minimumDays,
+    disabled: interval.key !== 'week' && trendSpanDays < interval.minimumDays,
   })), [trendSpanDays])
   const activeTrendInterval = availableTrendIntervals.find((interval) => interval.key === trendInterval && !interval.disabled)?.key
     ?? recommendedTrendInterval
@@ -1161,32 +1166,66 @@ function AppShell() {
       label: 'Config',
       color: '#3455a6',
       visible: trendUsageSelection.includes('CONFIGURATOR'),
-      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.CONFIGURATOR.count })),
+      points: trendRows.map((point) => ({
+        key: point.key,
+        label: point.label,
+        axisLabel: point.axisLabel,
+        value: trendMetricMode === 'percent'
+          ? (point.CONFIGURATOR.count + point.MANUAL.count ? point.CONFIGURATOR.count / (point.CONFIGURATOR.count + point.MANUAL.count) * 100 : 0)
+          : point.CONFIGURATOR.count,
+      })),
     },
     {
       key: 'MANUAL',
       label: 'Manual',
       color: '#ba6037',
       visible: trendUsageSelection.includes('MANUAL'),
-      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.count })),
+      points: trendRows.map((point) => ({
+        key: point.key,
+        label: point.label,
+        axisLabel: point.axisLabel,
+        value: trendMetricMode === 'percent'
+          ? (point.CONFIGURATOR.count + point.MANUAL.count ? point.MANUAL.count / (point.CONFIGURATOR.count + point.MANUAL.count) * 100 : 0)
+          : point.MANUAL.count,
+      })),
     },
-  ], [groupBy, trendRows, trendUsageSelection])
+  ], [groupBy, trendMetricMode, trendRows, trendUsageSelection])
   const trendValueSeries = useMemo(() => groupBy !== 'trend' ? [] : [
     {
       key: 'CONFIGURATOR',
       label: 'Config',
       color: '#3455a6',
       visible: trendUsageSelection.includes('CONFIGURATOR'),
-      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.CONFIGURATOR.convertedCount ? point.CONFIGURATOR.inr : Number.NaN })),
+      points: trendRows.map((point) => {
+        const totalValue = point.CONFIGURATOR.inr + point.MANUAL.inr
+        return {
+          key: point.key,
+          label: point.label,
+          axisLabel: point.axisLabel,
+          value: trendMetricMode === 'percent'
+            ? (totalValue ? point.CONFIGURATOR.inr / totalValue * 100 : Number.NaN)
+            : point.CONFIGURATOR.convertedCount ? point.CONFIGURATOR.inr : Number.NaN,
+        }
+      }),
     },
     {
       key: 'MANUAL',
       label: 'Manual',
       color: '#ba6037',
       visible: trendUsageSelection.includes('MANUAL'),
-      points: trendRows.map((point) => ({ key: point.key, label: point.label, value: point.MANUAL.convertedCount ? point.MANUAL.inr : Number.NaN })),
+      points: trendRows.map((point) => {
+        const totalValue = point.CONFIGURATOR.inr + point.MANUAL.inr
+        return {
+          key: point.key,
+          label: point.label,
+          axisLabel: point.axisLabel,
+          value: trendMetricMode === 'percent'
+            ? (totalValue ? point.MANUAL.inr / totalValue * 100 : Number.NaN)
+            : point.MANUAL.convertedCount ? point.MANUAL.inr : Number.NaN,
+        }
+      }),
     },
-  ], [groupBy, trendRows, trendUsageSelection])
+  ], [groupBy, trendMetricMode, trendRows, trendUsageSelection])
   const trendInsights = useMemo(() => {
     if (groupBy !== 'trend') return {
       configShare: 0,
@@ -1758,8 +1797,9 @@ function AppShell() {
                       },
                       trendCharts: groupBy === 'trend' ? {
                         interval: trendIntervalLabel,
-                        series: trendSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: formatCount(point.value) })) })),
-                        valueSeries: trendValueSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: Number.isFinite(point.value) ? formatMoney(point.value, 'INR') : 'No converted data' })) })),
+                        percentage: trendMetricMode === 'percent',
+                        series: trendSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: trendMetricMode === 'percent' ? `${point.value.toFixed(1)}%` : formatCount(point.value) })) })),
+                        valueSeries: trendValueSeries.map((item) => ({ ...item, points: item.points.map((point) => ({ ...point, valueLabel: Number.isFinite(point.value) ? trendMetricMode === 'percent' ? `${point.value.toFixed(1)}%` : formatMoney(point.value, 'INR') : 'No converted data' })) })),
                         insights: [
                           `Config share of quotations: ${trendInsights.configShare.toFixed(1)}% (${formatCount(trendInsights.config.count)} Config and ${formatCount(trendInsights.manual.count)} Manual).`,
                           `Config share of converted INR value: ${trendInsights.valueShare == null ? 'unavailable' : `${trendInsights.valueShare.toFixed(1)}%`}.`,
@@ -1790,6 +1830,7 @@ function AppShell() {
                         outlierFilter,
                         percentileTail,
                         trendInterval: activeTrendInterval,
+                        trendMetricMode,
                         trendUsageSelection,
                         options,
                       },
@@ -2022,20 +2063,30 @@ function AppShell() {
                 <section aria-label="Quotation trends" className="charts-section trend-section">
                   <div className="section-heading">
                     <div><h2>Quotation activity over time</h2><p>{trendIntervalLabel} totals for the active report filters</p></div>
-                    <span className="result-pill">{formatCount(trendRows.length)} time brackets</span>
+                    <div className="trend-header-actions">
+                      <div aria-label="Trend chart measure" className="trend-measure-toggle" role="group">
+                        <button aria-pressed={trendMetricMode === 'count'} className={trendMetricMode === 'count' ? 'is-active' : ''} onClick={() => setTrendMetricMode('count')} type="button">Raw numbers</button>
+                        <button aria-pressed={trendMetricMode === 'percent'} className={trendMetricMode === 'percent' ? 'is-active' : ''} onClick={() => setTrendMetricMode('percent')} type="button">Percent share</button>
+                      </div>
+                      <span className="result-pill">{formatCount(trendRows.length)} time brackets</span>
+                    </div>
                   </div>
                   <div className="trend-chart-grid">
                     <UsageTrendChart
-                      formatValue={(value) => formatCount(value)}
+                      formatValue={trendMetricMode === 'percent' ? (value) => `${value.toFixed(0)}%` : (value) => formatCount(value)}
                       series={trendSeries}
-                      title="Quotation volume"
-                      subtitle="Compare Config and Manual quotations in each time bracket"
+                      title={trendMetricMode === 'percent' ? 'Config vs Manual share' : 'Quotation volume'}
+                      subtitle={trendMetricMode === 'percent'
+                        ? `Percentage of quotations in each ${trendIntervalLabel.toLowerCase()} bracket`
+                        : 'Compare Config and Manual quotation counts in each time bracket'}
                     />
                     <UsageTrendChart
-                      formatValue={(value) => formatMoney(value, 'INR')}
+                      formatValue={trendMetricMode === 'percent' ? (value) => `${value.toFixed(0)}%` : (value) => formatMoney(value, 'INR')}
                       series={trendValueSeries}
-                      title="Converted quotation value"
-                      subtitle="Compare converted INR value for Config and Manual quotations"
+                      title={trendMetricMode === 'percent' ? 'Config vs Manual value share' : 'Converted quotation value'}
+                      subtitle={trendMetricMode === 'percent'
+                        ? `Percentage of converted INR value in each ${trendIntervalLabel.toLowerCase()} bracket`
+                        : 'Compare converted INR value for Config and Manual quotations'}
                     />
                   </div>
                 </section>
@@ -2127,7 +2178,7 @@ function AppShell() {
               chartRules={groupBy === 'trend'
                 ? [
                   `The trend charts use ${trendIntervalLabel.toLowerCase()} date buckets and compare Config with Manual quotations.`,
-                  'Quotation volume counts unique sales documents; value charts sum only rows with a configured INR conversion.',
+                  'Switch the volume chart between raw counts and Config/Manual percentage share within each time bracket; value charts sum INR conversions.',
                   'Config share and volume difference use the filtered time-series totals; value share uses converted INR totals only.',
                   'Every time bucket remains plotted; date labels are shortened and spaced to fit the chart width. Outlier thresholds are 1.5 × IQR, Modified Z-Score 3.5, or the selected percentile tails, calculated per currency.',
                 ]
@@ -2366,10 +2417,10 @@ function AppShell() {
         )}
 
         {(status || error) && (
-          <div aria-live="polite" className={`toast ${error ? 'toast-error' : ''}`}>
-            <span className="toast-icon"><Icon name={error ? 'close' : 'check'} size={15} /></span>
+          <div aria-live={error ? 'assertive' : 'polite'} className={`toast ${error ? 'toast-error' : status === 'Saved workbook restored from this browser.' ? 'toast-info' : ''}`} role={error ? 'alert' : 'status'}>
+            <span className="toast-icon"><Icon name={error ? 'close' : status === 'Saved workbook restored from this browser.' ? 'info' : 'check'} size={15} /></span>
             <span>{error || status}</span>
-            {error && <button aria-label="Dismiss error" onClick={() => setError('')} type="button"><Icon name="close" size={14} /></button>}
+            <button aria-label={error ? 'Dismiss error notification' : 'Dismiss notification'} onClick={() => error ? setError('') : setStatus('')} type="button"><Icon name="close" size={14} /></button>
           </div>
         )}
 
