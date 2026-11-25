@@ -1480,7 +1480,7 @@ function AppShell() {
               {datasetType !== 'procurement' && (
                 <>
                   <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/dashboard">Dashboard</NavLink>
-                  <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
+                  <NavLink className={({ isActive }) => `nav-link nav-link-secondary${isActive ? ' is-active' : ''}`} to="/steps">Processing steps</NavLink>
                 </>
               )}
               <NavLink className={({ isActive }) => `nav-link${isActive ? ' is-active' : ''}`} to="/raw-data">Raw data</NavLink>
@@ -1521,7 +1521,7 @@ function AppShell() {
             <span aria-hidden="true" className="theme-switch-track"><span /></span>
             <Icon name="moon" size={15} />
           </button>
-          <div className="local-badge"><span /> Saved locally</div>
+          <div aria-label="Workbook saved locally" className="local-badge" title="Workbook saved locally"><span /> Saved locally</div>
         </div>
       </header>
 

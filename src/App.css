@@ -3191,10 +3191,6 @@
     gap: 2px;
   }
 
-  .topbar-nav .nav-link:nth-child(3) {
-    display: none;
-  }
-
   .nav-link {
     padding: 0 6px;
     font-size: 12px;
@@ -5279,5 +5275,86 @@
 @media print {
   .back-to-top {
     display: none !important;
+  }
+}
+
+/* Keep the app navigation aligned without crowding its actions. */
+.topbar {
+  gap: 16px;
+  padding-inline: clamp(16px, 3vw, 48px);
+}
+
+.topbar-left {
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: clamp(10px, 1.8vw, 22px);
+}
+
+.brand {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.topbar-nav {
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: clamp(2px, 0.6vw, 8px);
+}
+
+.nav-link {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.topbar-actions {
+  flex: 0 0 auto;
+  gap: clamp(6px, 0.8vw, 11px);
+}
+
+@media (max-width: 1080px) {
+  .nav-link-secondary:not(.is-active) {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .brand-name {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    gap: 8px;
+    padding-inline: 12px;
+  }
+
+  .topbar-left {
+    flex: 1 1 0;
+    gap: 6px;
+  }
+
+  .topbar-nav {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .topbar-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .topbar-nav .nav-link-secondary:not(.is-active) {
+    display: none;
+  }
+
+  .nav-link {
+    padding-inline: 6px;
+    font-size: 12px;
+  }
+
+  .local-badge {
+    gap: 0;
+    padding: 7px;
+    font-size: 0;
   }
 }
